@@ -1,4 +1,4 @@
-"""Copa do Mundo 2026 — camada de dados e lógica de consulta."""
+"""Copa do Mundo 2026 — camada de dados (fonte: FIFA API)."""
 
 import json
 import re
@@ -8,26 +8,16 @@ import urllib.request
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-try:
-    from curl_cffi import requests as cffi_requests
-    _CFFI = True
-except ImportError:
-    import subprocess
-    _CFFI = False
-
 CACHE_DIR = Path.home() / ".cache" / "copa2026-discord"
 CACHE_TTL = 300
 
-SOFASCORE = "https://api.sofascore.com/api/v1"
 FIFA = "https://api.fifa.com/api/v3"
-SS_TOURNAMENT = 16
-SS_SEASON = 58210
 FIFA_COMPETITION = 17
 FIFA_SEASON = 285023
 
 BRT = timezone(timedelta(hours=-3))
 
-SS_TO_PT: dict[str, str] = {
+EN_TO_PT: dict[str, str] = {
     "brazil": "Brasil", "morocco": "Marrocos", "haiti": "Haiti",
     "scotland": "Escócia", "mexico": "México", "south africa": "África do Sul",
     "south korea": "Coreia do Sul", "czechia": "Tchéquia", "canada": "Canadá",
@@ -47,7 +37,7 @@ SS_TO_PT: dict[str, str] = {
     "ghana": "Gana", "panama": "Panamá", "japan": "Japão",
 }
 
-PT_TO_SS: dict[str, str] = {
+PT_TO_EN: dict[str, str] = {
     "brasil": "brazil", "marrocos": "morocco", "haiti": "haiti",
     "escocia": "scotland", "mexico": "mexico", "africa do sul": "south africa",
     "coreia do sul": "south korea", "coreia": "south korea",
@@ -74,56 +64,27 @@ PT_TO_SS: dict[str, str] = {
 FLAGS: dict[str, str] = {
     "brazil": "🇧🇷", "argentina": "🇦🇷", "france": "🇫🇷", "england": "🇬🇧",
     "germany": "🇩🇪", "spain": "🇪🇸", "portugal": "🇵🇹", "netherlands": "🇳🇱",
-    "italy": "🇮🇹", "usa": "🇺🇸", "mexico": "🇲🇽", "canada": "🇨🇦",
+    "usa": "🇺🇸", "mexico": "🇲🇽", "canada": "🇨🇦",
     "japan": "🇯🇵", "south korea": "🇰🇷", "australia": "🇦🇺",
-    "morocco": "🇲🇦", "senegal": "🇸🇳", "nigeria": "🇳🇬", "ghana": "🇬🇭",
+    "morocco": "🇲🇦", "senegal": "🇸🇳", "ghana": "🇬🇭",
     "egypt": "🇪🇬", "south africa": "🇿🇦", "colombia": "🇨🇴",
-    "uruguay": "🇺🇾", "chile": "🇨🇱", "ecuador": "🇪🇨", "paraguay": "🇵🇾",
-    "bolivia": "🇧🇴", "venezuela": "🇻🇪", "peru": "🇵🇪", "panama": "🇵🇦",
+    "uruguay": "🇺🇾", "ecuador": "🇪🇨", "paraguay": "🇵🇾", "panama": "🇵🇦",
     "croatia": "🇭🇷", "switzerland": "🇨🇭", "belgium": "🇧🇪",
     "denmark": "🇩🇰", "sweden": "🇸🇪", "norway": "🇳🇴", "austria": "🇦🇹",
-    "poland": "🇵🇱", "czechia": "🇨🇿", "slovakia": "🇸🇰", "hungary": "🇭🇺",
-    "ukraine": "🇺🇦", "serbia": "🇷🇸", "turkey": "🇹🇷", "türkiye": "🇹🇷",
+    "czechia": "🇨🇿", "turkey": "🇹🇷", "türkiye": "🇹🇷",
     "saudi arabia": "🇸🇦", "iran": "🇮🇷", "iraq": "🇮🇶", "qatar": "🇶🇦",
     "jordan": "🇯🇴", "uzbekistan": "🇺🇿", "new zealand": "🇳🇿",
-    "haiti": "🇭🇹", "scotland": "🏴󠁧󠁢󠁳󠁣󠁴󠁿", "wales": "🏴󠁧󠁢󠁷󠁬󠁳󠁿",
+    "haiti": "🇭🇹", "scotland": "🏴󠁧󠁢󠁳󠁣󠁴󠁿",
     "tunisia": "🇹🇳", "algeria": "🇩🇿", "côte d'ivoire": "🇨🇮",
     "dr congo": "🇨🇩", "cabo verde": "🇨🇻", "curaçao": "🇨🇼",
     "bosnia & herzegovina": "🇧🇦",
 }
 
-KNOCKOUT_ROUNDS = {
-    6: "Oitavas de final", 5: "Oitavas de final",
-    27: "Quartas de final", 28: "Semifinal",
-    29: "Decisão 3º lugar", 30: "Final",
-}
+_FIFA_STATUS = {0: "finished", 1: "notstarted", 3: "inprogress"}
 
 
 def _norm(s: str) -> str:
     return unicodedata.normalize("NFD", s.lower()).encode("ascii", "ignore").decode()
-
-
-def _get_sofascore(url: str, timeout: int = 8) -> dict | None:
-    if _CFFI:
-        try:
-            r = cffi_requests.get(url, impersonate="chrome110", timeout=timeout)
-            if r.status_code == 200:
-                return r.json()
-        except Exception:
-            pass
-    else:
-        try:
-            import subprocess
-            result = subprocess.run(
-                ["curl", "-s", f"--max-time", str(timeout),
-                 "-H", "User-Agent: Mozilla/5.0", "-H", "Accept: application/json", url],
-                capture_output=True, text=True, timeout=timeout + 2,
-            )
-            if result.stdout.strip():
-                return json.loads(result.stdout)
-        except Exception:
-            pass
-    return None
 
 
 def _get_fifa(url: str, timeout: int = 8) -> dict | None:
@@ -137,13 +98,13 @@ def _get_fifa(url: str, timeout: int = 8) -> dict | None:
         return None
 
 
-def _cached(key: str, fetcher, url: str, ttl: int = CACHE_TTL) -> dict | None:
+def _cached(key: str, url: str, ttl: int = CACHE_TTL) -> dict | None:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     path = CACHE_DIR / f"{key}.json"
     if path.exists() and (time.time() - path.stat().st_mtime) < ttl:
         with path.open() as f:
             return json.load(f)
-    data = fetcher(url)
+    data = _get_fifa(url)
     if data:
         with path.open("w") as f:
             json.dump(data, f)
@@ -153,34 +114,8 @@ def _cached(key: str, fetcher, url: str, ttl: int = CACHE_TTL) -> dict | None:
 def _load_fifa_matches() -> list[dict]:
     url = (f"{FIFA}/calendar/matches"
            f"?idCompetition={FIFA_COMPETITION}&idSeason={FIFA_SEASON}&count=200&language=pt")
-    data = _cached("fifa_matches", _get_fifa, url, ttl=3600)
+    data = _cached("fifa_matches", url, ttl=3600)
     return (data or {}).get("Results", [])
-
-
-def _load_ss_events() -> list[dict]:
-    events: list[dict] = []
-    rounds = list(range(1, 4)) + [5, 6, 27, 28, 29, 30]
-    for r in rounds:
-        url = (f"{SOFASCORE}/unique-tournament/{SS_TOURNAMENT}"
-               f"/season/{SS_SEASON}/events/round/{r}")
-        data = _cached(f"ss_round_{r}", _get_sofascore, url, ttl=120)
-        events.extend((data or {}).get("events", []))
-    return events
-
-
-def _load_standings() -> list[dict]:
-    url = (f"{SOFASCORE}/unique-tournament/{SS_TOURNAMENT}"
-           f"/season/{SS_SEASON}/standings/total")
-    data = _cached("standings", _get_sofascore, url, ttl=120)
-    return (data or {}).get("standings", [])
-
-
-def _load_lineups(event_id: int) -> dict | None:
-    return _get_sofascore(f"{SOFASCORE}/event/{event_id}/lineups")
-
-
-def _load_incidents(event_id: int) -> dict | None:
-    return _get_sofascore(f"{SOFASCORE}/event/{event_id}/incidents")
 
 
 def _load_fifa_live(match_id: str) -> dict | None:
@@ -188,58 +123,54 @@ def _load_fifa_live(match_id: str) -> dict | None:
     return _get_fifa(url)
 
 
-_FIFA_STATUS = {0: "finished", 1: "notstarted", 3: "inprogress"}
+def _player_map_fifa(home: dict, away: dict) -> dict[str, str]:
+    pmap: dict[str, str] = {}
+    for p in (home.get("Players") or []) + (away.get("Players") or []):
+        pid = p.get("IdPlayer")
+        if not pid:
+            continue
+        names = p.get("ShortName") or p.get("PlayerName") or []
+        for locale in ("pt-BR", "en-GB"):
+            for item in names:
+                if item.get("Locale") == locale:
+                    pmap[str(pid)] = item.get("Description", "?")
+                    break
+            if str(pid) in pmap:
+                break
+        if str(pid) not in pmap and names:
+            pmap[str(pid)] = (names[0] or {}).get("Description", "?")
+    return pmap
 
 
-def _build_matches(fifa: list[dict], ss: list[dict]) -> list[dict]:
-    ss_map: dict[tuple, dict] = {}
-    for e in ss:
-        h = _norm((e.get("homeTeam") or {}).get("name", ""))
-        a = _norm((e.get("awayTeam") or {}).get("name", ""))
-        ss_map[(h, a)] = e
-        ss_map[(a, h)] = e
-
+def _build_matches(fifa: list[dict]) -> list[dict]:
     matches = []
     for m in fifa:
         home_obj = m.get("Home") or {}
         away_obj = m.get("Away") or {}
         home_pt_raw = (home_obj.get("TeamName") or [{}])[0].get("Description", "?")
         away_pt_raw = (away_obj.get("TeamName") or [{}])[0].get("Description", "?")
-        home_en = PT_TO_SS.get(_norm(home_pt_raw), home_pt_raw.lower())
-        away_en = PT_TO_SS.get(_norm(away_pt_raw), away_pt_raw.lower())
-        home_pt = SS_TO_PT.get(home_en, home_pt_raw)
-        away_pt = SS_TO_PT.get(away_en, away_pt_raw)
+        home_en = PT_TO_EN.get(_norm(home_pt_raw), home_pt_raw.lower())
+        away_en = PT_TO_EN.get(_norm(away_pt_raw), away_pt_raw.lower())
+        home_pt = EN_TO_PT.get(home_en, home_pt_raw)
+        away_pt = EN_TO_PT.get(away_en, away_pt_raw)
 
-        ss_ev = ss_map.get((_norm(home_en), _norm(away_en)))
-        ss_id = ss_ev["id"] if ss_ev else None
-        status = (ss_ev or {}).get("status", {}).get("type")
-        h_score = ((ss_ev or {}).get("homeScore") or {}).get("current")
-        a_score = ((ss_ev or {}).get("awayScore") or {}).get("current")
+        status = _FIFA_STATUS.get(m.get("MatchStatus"), "notstarted")
+        h_score = home_obj.get("Score")
+        a_score = away_obj.get("Score")
 
-        if not ss_ev:
-            fifa_status_code = m.get("MatchStatus")
-            status = _FIFA_STATUS.get(fifa_status_code, "notstarted")
-            if home_obj.get("Score") is not None:
-                h_score = home_obj["Score"]
-            if away_obj.get("Score") is not None:
-                a_score = away_obj["Score"]
-
-        ts = (ss_ev or {}).get("startTimestamp", 0)
-        if not ts:
-            try:
-                ts = int(datetime.strptime(m.get("Date", ""), "%Y-%m-%dT%H:%M:%SZ")
-                         .replace(tzinfo=timezone.utc).timestamp())
-            except Exception:
-                ts = 0
+        try:
+            ts = int(datetime.strptime(m.get("Date", ""), "%Y-%m-%dT%H:%M:%SZ")
+                     .replace(tzinfo=timezone.utc).timestamp())
+        except Exception:
+            ts = 0
 
         matches.append({
             "home_pt": home_pt, "away_pt": away_pt,
             "home_en": home_en, "away_en": away_en,
-            "date_ts": ts, "status": status or "notstarted",
+            "date_ts": ts, "status": status,
             "home_score": h_score, "away_score": a_score,
             "group": (m.get("GroupName") or [{}])[0].get("Description", ""),
             "stage": (m.get("StageName") or [{}])[0].get("Description", ""),
-            "ss_id": ss_id,
             "fifa_id": m.get("IdMatch"),
         })
     return matches
@@ -265,12 +196,12 @@ def _score(m: dict) -> str:
 
 def _resolve(query: str) -> str:
     q = _norm(query)
-    if q in PT_TO_SS:
-        return PT_TO_SS[q]
-    for k, v in PT_TO_SS.items():
+    if q in PT_TO_EN:
+        return PT_TO_EN[q]
+    for k, v in PT_TO_EN.items():
         if q in _norm(k) or _norm(k) in q:
             return v
-    for en in SS_TO_PT:
+    for en in EN_TO_PT:
         if q in _norm(en):
             return en
     return query.lower()
@@ -290,17 +221,14 @@ def is_brazil_match(m: dict) -> bool:
 
 
 _matches_cache: list[dict] | None = None
-_standings_cache: list[dict] | None = None
 _cache_ts: float = 0
 
 
 def _refresh_cache() -> None:
-    global _matches_cache, _standings_cache, _cache_ts
+    global _matches_cache, _cache_ts
     if _matches_cache is None or (time.time() - _cache_ts) > 120:
         fifa = _load_fifa_matches()
-        ss = _load_ss_events()
-        _matches_cache = _build_matches(fifa, ss)
-        _standings_cache = _load_standings()
+        _matches_cache = _build_matches(fifa)
         _cache_ts = time.time()
 
 
@@ -344,59 +272,36 @@ def get_team_matches(team_query: str) -> list[dict]:
     return [m for m in (_matches_cache or []) if _match_team(m, t_en)]
 
 
-def get_group_data(letter: str) -> tuple[dict | None, list[dict]]:
+def get_group_matches(letter: str) -> list[dict]:
     _refresh_cache()
     group_name = f"Group {letter.upper()}"
-    standings = _standings_cache or []
-    sg = next(
-        (s for s in standings if group_name in (s.get("tournament") or {}).get("name", "")),
-        None,
+    return sorted(
+        [m for m in (_matches_cache or [])
+         if m["group"] == group_name or m["group"].startswith(f"Grupo {letter.upper()}")],
+        key=lambda x: x["date_ts"],
     )
-    gm = [
-        m for m in (_matches_cache or [])
-        if m["group"] == group_name or m["group"].startswith(f"Grupo {letter.upper()}")
-    ]
-    return sg, sorted(gm, key=lambda x: x["date_ts"])
-
-
-def _player_map_fifa(home: dict, away: dict) -> dict[str, str]:
-    pmap: dict[str, str] = {}
-    for p in (home.get("Players") or []) + (away.get("Players") or []):
-        pid = p.get("IdPlayer")
-        if not pid:
-            continue
-        names = p.get("ShortName") or p.get("PlayerName") or []
-        for locale in ("pt-BR", "en-GB"):
-            for item in names:
-                if item.get("Locale") == locale:
-                    pmap[str(pid)] = item.get("Description", "?")
-                    break
-            if str(pid) in pmap:
-                break
-        if str(pid) not in pmap and names:
-            pmap[str(pid)] = (names[0] or {}).get("Description", "?")
-    return pmap
 
 
 def get_scorers() -> list[dict]:
     _refresh_cache()
-    finished = [m for m in (_matches_cache or []) if m["status"] == "finished" and m["ss_id"]]
-    scorers: dict[int, dict] = {}
+    finished = [m for m in (_matches_cache or []) if m["status"] == "finished" and m.get("fifa_id")]
+    scorers: dict[str, dict] = {}
     for m in finished:
-        data = _load_incidents(m["ss_id"])
-        for inc in (data or {}).get("incidents", []):
-            if inc.get("incidentType") != "goal" or inc.get("isOwnGoal"):
-                continue
-            player = inc.get("player") or {}
-            pid = player.get("id")
-            if not pid:
-                continue
-            if pid not in scorers:
-                team_name = (inc.get("team") or {}).get("name", "?")
-                scorers[pid] = {
-                    "name": player.get("shortName") or player.get("name", "?"),
-                    "team": SS_TO_PT.get(team_name.lower(), team_name),
-                    "goals": 0,
-                }
-            scorers[pid]["goals"] += 1
+        data = _load_fifa_live(m["fifa_id"])
+        if not data:
+            continue
+        home = data.get("HomeTeam") or {}
+        away = data.get("AwayTeam") or {}
+        pmap = _player_map_fifa(home, away)
+        for side_pt, side in [(m["home_pt"], home), (m["away_pt"], away)]:
+            for g in (side.get("Goals") or []):
+                if g.get("Type") == 3:
+                    continue
+                pid = str(g.get("IdPlayer") or "")
+                if not pid:
+                    continue
+                name = pmap.get(pid, f"ID:{pid}")
+                if pid not in scorers:
+                    scorers[pid] = {"name": name, "team": side_pt, "goals": 0}
+                scorers[pid]["goals"] += 1
     return sorted(scorers.values(), key=lambda x: -x["goals"])

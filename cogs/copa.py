@@ -62,7 +62,7 @@ def _embed_jogos_rodada(jogos: list[dict]) -> discord.Embed:
 
 def _embed_team(team_query: str, matches: list[dict]) -> discord.Embed:
     t_en = copa_svc._resolve(team_query)
-    pt_name = copa_svc.SS_TO_PT.get(t_en, team_query.title())
+    pt_name = copa_svc.EN_TO_PT.get(t_en, team_query.title())
     team_flag = _flag(t_en)
 
     embed = discord.Embed(
@@ -97,26 +97,11 @@ def _embed_team(team_query: str, matches: list[dict]) -> discord.Embed:
     return embed
 
 
-def _embed_grupo(letter: str, sg: dict | None, gm: list[dict]) -> discord.Embed:
+def _embed_grupo(letter: str, gm: list[dict]) -> discord.Embed:
     embed = discord.Embed(
         title=f"🏆 Copa 2026 — Grupo {letter.upper()}",
         color=0x3B82F6,
     )
-    if sg:
-        rows = sg.get("rows", [])
-        lines = ["```", f"{'#':<3} {'Time':<22} {'PJ':<3} {'V':<3} {'E':<3} {'D':<3} {'GP':<3} {'GC':<3} {'SG':<4} Pts", "─" * 52]
-        for row in rows:
-            pos = row.get("position", "-")
-            tname = copa_svc.SS_TO_PT.get(row.get("team", {}).get("name", "?").lower(),
-                                           row.get("team", {}).get("name", "?"))
-            pj = row.get("matches", 0)
-            w, d, l = row.get("wins", 0), row.get("draws", 0), row.get("losses", 0)
-            gf, gc = row.get("scoresFor", 0), row.get("scoresAgainst", 0)
-            pts = row.get("points", 0)
-            lines.append(f"{pos:<3} {tname:<22} {pj:<3} {w:<3} {d:<3} {l:<3} {gf:<3} {gc:<3} {gf-gc:<+4} {pts}")
-        lines.append("```")
-        embed.add_field(name="Tabela", value="\n".join(lines), inline=False)
-
     if gm:
         jogos_str = []
         for m in gm:
@@ -233,11 +218,11 @@ class CopaCog(commands.Cog):
             await interaction.followup.send("❌ Informe uma letra de grupo válida (A–L).", ephemeral=True)
             return
         try:
-            sg, gm = await asyncio.to_thread(copa_svc.get_group_data, letra)
+            gm = await asyncio.to_thread(copa_svc.get_group_matches, letra)
         except Exception:
             await interaction.followup.send("❌ Erro ao buscar dados. Tente novamente.", ephemeral=True)
             return
-        embed = _embed_grupo(letra, sg, gm)
+        embed = _embed_grupo(letra, gm)
         await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="copa-artilharia", description="Artilheiros da Copa 2026")
