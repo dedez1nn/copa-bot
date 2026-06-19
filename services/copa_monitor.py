@@ -20,6 +20,7 @@ _watch: dict[str, dict] = {}
 LINEUP_INTERVAL_BRAZIL = 10
 LINEUP_INTERVAL_OTHER = 60
 LINEUP_WINDOW_SECS = 3600
+VAR_WINDOW_SECS = 600
 
 _POS_FIFA = {0: "GK", 1: "DEF", 2: "MEI", 3: "ATA"}
 
@@ -38,6 +39,10 @@ def _state(key: str) -> dict:
             "last_period": None,
             "seen_goals": set(),
             "seen_cards": set(),
+            "last_status": None,
+            "suspended": False,
+            "pending_goals": {},
+            "pending_cards": {},
         }
     return _watch[key]
 
@@ -143,9 +148,23 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
             st["2ht_sent"] = True
         return
 
-    all_goals = [(home_pt, g) for g in (home.get("Goals") or [])] + \
-                [(away_pt, g) for g in (away.get("Goals") or [])]
-    for team_pt, g in all_goals:
+    # -- conjuntos atuais para checar remoções via VAR --
+    all_goals_raw = [(home_pt, g) for g in (home.get("Goals") or [])] + \
+                    [(away_pt, g) for g in (away.get("Goals") or [])]
+    current_goal_keys: set = {
+        (g.get("IdPlayer"), g.get("Minute"), g.get("Period"), g.get("Type"))
+        for _, g in all_goals_raw
+    }
+
+    all_cards_raw = [(home_pt, b) for b in (home.get("Bookings") or [])] + \
+                    [(away_pt, b) for b in (away.get("Bookings") or [])]
+    current_red_keys: set = {
+        (b.get("IdPlayer"), b.get("Minute"), b.get("Card"))
+        for _, b in all_cards_raw if b.get("Card") == 2
+    }
+
+    # -- novos gols --
+    for team_pt, g in all_goals_raw:
         gkey = (g.get("IdPlayer"), g.get("Minute"), g.get("Period"), g.get("Type"))
         if gkey in st["seen_goals"]:
             continue
@@ -154,6 +173,10 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
         minute = g.get("Minute", "?")
         gtype = g.get("Type", 2)
         extra = " (contra)" if gtype == 3 else (" (pen)" if gtype == 4 else "")
+        st["pending_goals"][gkey] = {
+            "ts": time.time(), "player": player, "team_pt": team_pt,
+            "minute": minute, "extra": extra,
+        }
         await _send_all(
             bot, channels,
             content=(
@@ -162,9 +185,8 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
             ),
         )
 
-    all_cards = [(home_pt, b) for b in (home.get("Bookings") or [])] + \
-                [(away_pt, b) for b in (away.get("Bookings") or [])]
-    for team_pt, b in all_cards:
+    # -- novos cartões vermelhos --
+    for team_pt, b in all_cards_raw:
         ckey = (b.get("IdPlayer"), b.get("Minute"), b.get("Card"))
         if ckey in st["seen_cards"]:
             continue
@@ -173,8 +195,42 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
             continue
         player = pmap.get(str(b.get("IdPlayer") or ""), "?")
         minute = b.get("Minute", "?")
+        st["pending_cards"][ckey] = {
+            "ts": time.time(), "player": player, "team_pt": team_pt, "minute": minute,
+        }
         await _send_all(bot, channels, content=f"🟥 **{player}** ({team_pt}) — {minute}'")
 
+    # -- VAR: gol removido da API → anulado --
+    now_var = time.time()
+    for gkey, info in list(st["pending_goals"].items()):
+        if gkey not in current_goal_keys:
+            del st["pending_goals"][gkey]
+            await _send_all(
+                bot, channels,
+                content=(
+                    f"🚫 **Gol anulado pelo VAR!** {info['player']}{info['extra']} "
+                    f"({info['team_pt']}) — {info['minute']}'\n"
+                    f"**{home_pt} {h_score}-{a_score} {away_pt}**"
+                ),
+            )
+        elif now_var - info["ts"] >= VAR_WINDOW_SECS:
+            del st["pending_goals"][gkey]
+
+    # -- VAR: vermelho removido da API → revertido --
+    for ckey, info in list(st["pending_cards"].items()):
+        if ckey not in current_red_keys:
+            del st["pending_cards"][ckey]
+            await _send_all(
+                bot, channels,
+                content=(
+                    f"🟨 **Vermelho revertido pelo VAR!** {info['player']} "
+                    f"({info['team_pt']}) — {info['minute']}'"
+                ),
+            )
+        elif now_var - info["ts"] >= VAR_WINDOW_SECS:
+            del st["pending_cards"][ckey]
+
+    # -- transições de período --
     last = st["last_period"]
     if period != last:
         if last == 3 and not st["ht_sent"]:
@@ -240,6 +296,24 @@ async def run_monitor_tick(bot: discord.Client, channels: list[tuple[int, int]])
         status = m["status"]
         hf = flag(m["home_en"])
         af = flag(m["away_en"])
+
+        # ── Suspensão / retomada ──
+        _last = st["last_status"]
+        if _last == "inprogress" and status == "notstarted" and st["kicked_off"] and not st["final_sent"]:
+            st["suspended"] = True
+            await _send_all(
+                bot, channels,
+                content=f"⚠️ **Jogo suspenso temporariamente!**\n⚽ **{hf} {m['home_pt']} x {m['away_pt']} {af}**",
+            )
+        elif st.get("suspended") and status == "inprogress":
+            st["suspended"] = False
+            h = m["home_score"] if m["home_score"] is not None else 0
+            a = m["away_score"] if m["away_score"] is not None else 0
+            await _send_all(
+                bot, channels,
+                content=f"▶️ **Jogo retomado!**\n⚽ **{hf} {m['home_pt']} {h}-{a} {m['away_pt']} {af}**",
+            )
+        st["last_status"] = status
 
         # ── Aviso 30 min antes ──
         if not st["announced_30"] and status == "notstarted" and 0 < (ts - now) <= 1800:
