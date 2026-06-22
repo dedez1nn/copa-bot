@@ -40,18 +40,28 @@ def _flag(en: str) -> str:
 _DAYS_PER_PAGE = 4
 
 
+def _br(m: dict) -> bool:
+    return copa_svc.is_brazil_match(m)
+
+
+def _jogo_linha(m: dict, show_hora: bool = True) -> str:
+    status = m["status"]
+    icon = "🔴" if status == "inprogress" else ("✅" if status == "finished" else "🗓️")
+    br = _br(m)
+    hf = _flag(m["home_en"])
+    af = _flag(m["away_en"])
+    hora = datetime.fromtimestamp(m["date_ts"], tz=BRT).strftime("%H:%M")
+    suffix = f" — {hora} BRT" if show_hora else ""
+    linha = f"{icon} **{hf} {m['home_pt']}  {_score_str(m)}  {m['away_pt']} {af}**{suffix}"
+    return f"🟢 {linha}" if br else linha
+
+
 def _jogos_por_dia(jogos: list[dict]) -> list[tuple[str, str]]:
     """Retorna lista de (dia, valor_field) para todos os dias com jogos."""
     por_dia: dict[str, list[str]] = {}
     for m in jogos:
-        status = m["status"]
-        icon = "🔴" if status == "inprogress" else ("✅" if status == "finished" else "🗓️")
-        hf = _flag(m["home_en"])
-        af = _flag(m["away_en"])
-        hora = datetime.fromtimestamp(m["date_ts"], tz=BRT).strftime("%H:%M")
-        dia  = datetime.fromtimestamp(m["date_ts"], tz=BRT).strftime("%d/%m")
-        linha = f"{icon} **{hf} {m['home_pt']}  {_score_str(m)}  {m['away_pt']} {af}** — {hora} BRT"
-        por_dia.setdefault(dia, []).append(linha)
+        dia = datetime.fromtimestamp(m["date_ts"], tz=BRT).strftime("%d/%m")
+        por_dia.setdefault(dia, []).append(_jogo_linha(m))
     result = []
     for dia, linhas in por_dia.items():
         valor = "\n".join(linhas)
@@ -129,10 +139,9 @@ def _embed_team(team_query: str, matches: list[dict]) -> discord.Embed:
     proximos = sorted([m for m in matches if m["status"] == "notstarted"], key=lambda x: x["date_ts"])
 
     def _fmt(m):
-        hf = _flag(m["home_en"])
-        af = _flag(m["away_en"])
         grupo = m.get("group") or m.get("stage") or ""
-        return f"{hf} **{m['home_pt']}** {_score_str(m)} **{m['away_pt']}** {af}  `{_ts_str(m['date_ts'])} BRT`  *{grupo}*"
+        base = f"{_jogo_linha(m)}  `{_ts_str(m['date_ts'])} BRT`"
+        return f"{base}  *{grupo}*" if grupo else base
 
     if ao_vivo:
         embed.add_field(name="🔴 Ao vivo", value="\n".join(_fmt(m) for m in ao_vivo), inline=False)
@@ -154,13 +163,10 @@ def _embed_grupo(letter: str, gm: list[dict]) -> discord.Embed:
         color=0x3B82F6,
     )
     if gm:
-        jogos_str = []
-        for m in gm:
-            hf = _flag(m["home_en"])
-            af = _flag(m["away_en"])
-            jogos_str.append(
-                f"{hf} **{m['home_pt']}** {_score_str(m)} **{m['away_pt']}** {af}  `{_ts_str(m['date_ts'])} BRT`"
-            )
+        jogos_str = [
+            f"{_jogo_linha(m)}  `{_ts_str(m['date_ts'])} BRT`"
+            for m in gm
+        ]
         embed.add_field(name="Jogos", value="\n".join(jogos_str), inline=False)
 
     return embed
@@ -171,10 +177,14 @@ def _embed_artilharia(scorers: list[dict]) -> discord.Embed:
     if not scorers:
         embed.description = "⏳ Nenhum gol registrado ainda."
         return embed
-    lines = ["```", f"{'#':<4} {'Jogador':<22} {'Time':<20} Gols", "─" * 52]
+    lines = []
     for i, s in enumerate(scorers[:20], 1):
-        lines.append(f"{i:<4} {s['name']:<22} {s['team']:<20} {s['goals']}")
-    lines.append("```")
+        team_en = copa_svc._resolve(s["team"])
+        flag_emoji = _flag(team_en)
+        br = team_en == "brazil"
+        gols = "⚽" * min(s["goals"], 8) + (f" +{s['goals']-8}" if s["goals"] > 8 else "")
+        linha = f"`{i:>2}.` {flag_emoji} **{s['name']}** — *{s['team']}* — {gols}"
+        lines.append(f"🟢 {linha}" if br else linha)
     embed.description = "\n".join(lines)
     return embed
 
@@ -189,10 +199,9 @@ def _embed_resumo_diario(jogos: list[dict], now_brt: datetime) -> discord.Embed:
     for m in sorted(jogos, key=lambda x: x["date_ts"]):
         hora = datetime.fromtimestamp(m["date_ts"], tz=BRT).strftime("%H:%M")
         grupo = m.get("group") or m.get("stage") or ""
-        hf = _flag(m["home_en"])
-        af = _flag(m["away_en"])
         grupo_str = f"  *{grupo}*" if grupo else ""
-        lines.append(f"⚽ **{hora} BRT** — {hf} **{m['home_pt']}** × **{m['away_pt']}** {af}{grupo_str}")
+        base = f"**{hora} BRT** — {_jogo_linha(m, show_hora=False)}{grupo_str}"
+        lines.append(base)
     embed.description = "\n".join(lines)
     embed.set_footer(text=hoje_str + " · Copa do Mundo FIFA™ 2026")
     embed.timestamp = discord.utils.utcnow()
