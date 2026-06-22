@@ -235,18 +235,48 @@ def _refresh_cache() -> None:
 def get_jogos_rodada() -> list[dict]:
     _refresh_cache()
     now = time.time()
-    janela = 48 * 3600
-    resultado = []
-    for m in (_matches_cache or []):
-        ts = m["date_ts"]
-        status = m["status"]
-        if status == "inprogress":
-            resultado.append(m)
-        elif status == "finished" and (now - ts) <= janela:
-            resultado.append(m)
-        elif status == "notstarted" and 0 <= (ts - now) <= janela:
-            resultado.append(m)
-    return sorted(resultado, key=lambda m: m["date_ts"])
+    matches = _matches_cache or []
+
+    if not matches:
+        return []
+
+    # Clusteriza as datas de jogo: gap > 1 dia entre datas consecutivas = nova rodada
+    all_dates = sorted(set(
+        datetime.fromtimestamp(m["date_ts"], tz=BRT).date()
+        for m in matches if m["date_ts"]
+    ))
+    rodadas: list[list] = [[all_dates[0]]]
+    for d in all_dates[1:]:
+        if (d - rodadas[-1][-1]).days <= 1:
+            rodadas[-1].append(d)
+        else:
+            rodadas.append([d])
+
+    today = datetime.fromtimestamp(now, tz=BRT).date()
+
+    # Rodada que contém hoje; se estiver no intervalo, pega a mais próxima
+    best: list | None = None
+    best_dist: float = float("inf")
+    for rodada in rodadas:
+        if rodada[0] <= today <= rodada[-1]:
+            best = rodada
+            break
+        dist = min(abs((today - rodada[0]).days), abs((today - rodada[-1]).days))
+        if dist < best_dist:
+            best_dist = dist
+            best = rodada
+
+    if not best:
+        return []
+
+    d_start, d_end = best[0], best[-1]
+    return sorted(
+        [
+            m for m in matches
+            if d_start <= datetime.fromtimestamp(m["date_ts"], tz=BRT).date() <= d_end
+        ],
+        key=lambda m: m["date_ts"],
+    )
 
 
 def get_jogos_hoje() -> list[dict]:

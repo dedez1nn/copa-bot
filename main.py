@@ -15,7 +15,7 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
-COGS = ["cogs.copa", "cogs.selfbot_trap", "cogs.dev"]
+COGS = ["cogs.fenrir", "cogs.copa", "cogs.selfbot_trap", "cogs.dev"]
 
 intents = discord.Intents.default()
 intents.message_content = True

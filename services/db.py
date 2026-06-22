@@ -23,6 +23,7 @@ async def init_db() -> None:
     await _db["copa_channels"].create_index("guild_id", unique=True)
     await _db["selfbot_trap_channels"].create_index("guild_id", unique=True)
     await _db["selfbot_log_channels"].create_index("guild_id", unique=True)
+    await _db["command_channels"].create_index("guild_id", unique=True)
     logger.info("MongoDB conectado: %s", uri.split("@")[-1])
 
 
@@ -91,4 +92,28 @@ async def remove_selfbot_log_channel(guild_id: int) -> None:
 
 async def get_all_selfbot_log_channels() -> dict[int, int]:
     cursor = _col("selfbot_log_channels").find({})
+    return {doc["guild_id"]: doc["channel_id"] async for doc in cursor}
+
+
+# ── Command channels (canal-fenrir) ──────────────────────────────────────────
+
+async def get_command_channel(guild_id: int) -> int | None:
+    doc = await _col("command_channels").find_one({"guild_id": guild_id})
+    return doc["channel_id"] if doc else None
+
+
+async def set_command_channel(guild_id: int, channel_id: int) -> None:
+    await _col("command_channels").update_one(
+        {"guild_id": guild_id},
+        {"$set": {"channel_id": channel_id}},
+        upsert=True,
+    )
+
+
+async def remove_command_channel(guild_id: int) -> None:
+    await _col("command_channels").delete_one({"guild_id": guild_id})
+
+
+async def get_all_command_channels() -> dict[int, int]:
+    cursor = _col("command_channels").find({})
     return {doc["guild_id"]: doc["channel_id"] async for doc in cursor}

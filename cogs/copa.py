@@ -10,6 +10,7 @@ from discord.ext import commands, tasks
 
 from services import copa as copa_svc
 from services import copa_monitor as monitor
+from services import gate
 from services.db import get_all_copa_channels, get_copa_channel, set_copa_channel
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,7 @@ def _embed_jogos_rodada(jogos: list[dict]) -> discord.Embed:
         color=0x3B82F6,
     )
     if not jogos:
-        embed.description = "Nenhum jogo nas próximas 48h ou últimas 48h."
+        embed.description = "Nenhum jogo encontrado para a rodada atual."
         return embed
 
     linhas = []
@@ -187,8 +188,10 @@ class CopaCog(commands.Cog):
 
     # ── Slash commands ────────────────────────────────────────────────────────
 
-    @app_commands.command(name="copa", description="Mostra os jogos da Copa 2026 na janela de 48h")
+    @app_commands.command(name="copa", description="Mostra todos os jogos da rodada atual da Copa 2026")
     async def cmd_copa(self, interaction: discord.Interaction) -> None:
+        if not await gate.allowed(interaction):
+            return
         await interaction.response.defer()
         try:
             jogos = await asyncio.to_thread(copa_svc.get_jogos_rodada)
@@ -201,6 +204,8 @@ class CopaCog(commands.Cog):
     @app_commands.command(name="copa-time", description="Jogos de uma seleção na Copa 2026")
     @app_commands.describe(selecao="Nome da seleção (ex: Brasil, Argentina, França)")
     async def cmd_copa_time(self, interaction: discord.Interaction, selecao: str) -> None:
+        if not await gate.allowed(interaction):
+            return
         await interaction.response.defer()
         try:
             matches = await asyncio.to_thread(copa_svc.get_team_matches, selecao)
@@ -213,6 +218,8 @@ class CopaCog(commands.Cog):
     @app_commands.command(name="copa-grupo", description="Tabela e jogos de um grupo da Copa 2026")
     @app_commands.describe(letra="Letra do grupo (A–L)")
     async def cmd_copa_grupo(self, interaction: discord.Interaction, letra: str) -> None:
+        if not await gate.allowed(interaction):
+            return
         await interaction.response.defer()
         if len(letra) != 1 or letra.upper() not in "ABCDEFGHIJKL":
             await interaction.followup.send("❌ Informe uma letra de grupo válida (A–L).", ephemeral=True)
@@ -227,6 +234,8 @@ class CopaCog(commands.Cog):
 
     @app_commands.command(name="copa-artilharia", description="Artilheiros da Copa 2026")
     async def cmd_copa_artilharia(self, interaction: discord.Interaction) -> None:
+        if not await gate.allowed(interaction):
+            return
         await interaction.response.defer()
         try:
             scorers = await asyncio.to_thread(copa_svc.get_scorers)
@@ -268,7 +277,7 @@ class CopaCog(commands.Cog):
         embed.add_field(
             name="📋 Comandos disponíveis",
             value=(
-                "`/copa` — Jogos da rodada (janela de 48h)\n"
+                "`/copa` — Todos os jogos da rodada atual\n"
                 "`/copa-time <seleção>` — Todos os jogos de uma seleção\n"
                 "`/copa-grupo <letra>` — Jogos de um grupo (A–L)\n"
                 "`/copa-artilharia` — Top artilheiros da Copa"
