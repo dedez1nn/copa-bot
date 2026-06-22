@@ -9,7 +9,7 @@ import discord
 
 from services.copa import (
     BRT, EN_TO_PT, FLAGS,
-    _load_fifa_live, _player_map_fifa,
+    _load_fifa_live, _load_fifa_timeline, _player_map_fifa,
     get_jogos_rodada, is_brazil_match, flag,
 )
 from services import youtube
@@ -60,6 +60,10 @@ def _state(key: str) -> dict:
             "suspended": False,
             "pending_goals": {},
             "pending_cards": {},
+            "seen_timeline_events": set(),
+            "home_team_id": None,
+            "away_team_id": None,
+            "pmap": {},
         }
     return _watch[key]
 
@@ -366,6 +370,10 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
     home_pt = m["home_pt"]
     away_pt = m["away_pt"]
     pmap = _player_map_fifa(home, away)
+    st["pmap"] = pmap
+    if not st["home_team_id"]:
+        st["home_team_id"] = home.get("IdTeam")
+        st["away_team_id"] = away.get("IdTeam")
 
     if st.get("fifa_was_blocked"):
         st["fifa_was_blocked"] = False
@@ -490,6 +498,57 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
         await _send_all(bot, channels, embed=build_final_embed(m, h_score, a_score, data))
 
 
+# ── Verificação de timeline ───────────────────────────────────────────────────
+
+def _team_from_event(m: dict, st: dict, team_id) -> tuple[str, str]:
+    """Retorna (nome_pt, flag) do time com base no IdTeam do evento."""
+    if team_id and team_id == st.get("home_team_id"):
+        return m["home_pt"], flag(m["home_en"])
+    if team_id and team_id == st.get("away_team_id"):
+        return m["away_pt"], flag(m["away_en"])
+    return "?", ""
+
+
+async def _check_fifa_timeline(bot, channels, m: dict, st: dict) -> None:
+    events = await asyncio.to_thread(_load_fifa_timeline, m)
+    if not events:
+        return
+
+    for event in events:
+        eid = event.get("EventId")
+        if not eid or eid in st["seen_timeline_events"]:
+            continue
+        st["seen_timeline_events"].add(eid)
+
+        etype = event.get("Type")
+        minute = event.get("MatchMinute", "?")
+        team_id = event.get("IdTeam")
+        player_id = str(event.get("IdPlayer") or "")
+        team_name, team_flag = _team_from_event(m, st, team_id)
+        pmap = st.get("pmap") or {}
+
+        if etype == 7:  # Horário de início — backup de kickoff
+            if not st["kicked_off"]:
+                st["kicked_off"] = True
+                await _send_all(bot, channels, embed=build_kickoff_embed(m))
+
+        elif etype == 6:  # Pênalti marcado (árbitro)
+            await _send_all(
+                bot, channels,
+                content=f"🎯 **Pênalti!** {team_flag} **{team_name}** — {minute}'",
+            )
+
+        elif etype == 15:  # Impedimento
+            player = pmap.get(player_id, "") if player_id else ""
+            if player:
+                msg = f"🚩 **Impedimento!** {player} ({team_flag} {team_name}) — {minute}'"
+            elif team_name != "?":
+                msg = f"🚩 **Impedimento!** {team_flag} {team_name} — {minute}'"
+            else:
+                msg = f"🚩 **Impedimento!** — {minute}'"
+            await _send_all(bot, channels, content=msg)
+
+
 # ── Verificação de escalação ──────────────────────────────────────────────────
 
 async def check_lineup(m: dict) -> discord.Embed | None:
@@ -596,6 +655,9 @@ async def run_monitor_tick(bot: discord.Client, channels: list[tuple[int, int]])
             if data:
                 home = data.get("HomeTeam") or {}
                 away = data.get("AwayTeam") or {}
+                st["home_team_id"] = home.get("IdTeam")
+                st["away_team_id"] = away.get("IdTeam")
+                st["pmap"] = _player_map_fifa(home, away)
                 for side in (home, away):
                     for g in (side.get("Goals") or []):
                         st["seen_goals"].add((g.get("IdPlayer"), g.get("Minute"), g.get("Period"), g.get("Type")))
@@ -607,12 +669,19 @@ async def run_monitor_tick(bot: discord.Client, channels: list[tuple[int, int]])
                     st["ht_sent"] = True
                 if period is not None and period >= 4:
                     st["2ht_sent"] = True
+                # Prime eventos do timeline para não re-notificar eventos passados
+                tl_events = await asyncio.to_thread(_load_fifa_timeline, m)
+                for ev in (tl_events or []):
+                    eid = ev.get("EventId")
+                    if eid:
+                        st["seen_timeline_events"].add(eid)
                 st["primed"] = True
             continue
 
         # ── Ao vivo ──
         if status == "inprogress":
             await _check_fifa_live(bot, channels, m, st)
+            await _check_fifa_timeline(bot, channels, m, st)
 
         # ── Fim de jogo (via status finished) ──
         if not st["final_sent"] and status == "finished" and st["kicked_off"]:

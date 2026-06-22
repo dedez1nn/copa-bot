@@ -123,6 +123,17 @@ def _load_fifa_live(match_id: str) -> dict | None:
     return _get_fifa(url)
 
 
+def _load_fifa_timeline(m: dict) -> list[dict] | None:
+    stage_id = m.get("stage_id")
+    match_id = m.get("fifa_id")
+    if not stage_id or not match_id:
+        return None
+    url = (f"{FIFA}/timelines/{FIFA_COMPETITION}/{FIFA_SEASON}"
+           f"/{stage_id}/{match_id}?language=pt")
+    data = _get_fifa(url)
+    return (data or {}).get("Event") or None
+
+
 def _player_map_fifa(home: dict, away: dict) -> dict[str, str]:
     pmap: dict[str, str] = {}
     for p in (home.get("Players") or []) + (away.get("Players") or []):
@@ -172,6 +183,7 @@ def _build_matches(fifa: list[dict]) -> list[dict]:
             "group": (m.get("GroupName") or [{}])[0].get("Description", ""),
             "stage": (m.get("StageName") or [{}])[0].get("Description", ""),
             "fifa_id": m.get("IdMatch"),
+            "stage_id": m.get("IdStage"),
         })
     return matches
 
