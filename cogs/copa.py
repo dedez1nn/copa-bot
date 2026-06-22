@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import math
+import time
 from datetime import datetime
 
 import discord
@@ -56,12 +58,24 @@ def _embed_jogos_rodada(jogos: list[dict]) -> discord.Embed:
         linha = f"{icon} **{hf} {m['home_pt']}  {_score_str(m)}  {m['away_pt']} {af}** — {hora} BRT"
         por_dia.setdefault(dia, []).append(linha)
 
-    for dia, linhas in por_dia.items():
+    dias = list(por_dia.items())
+    # Discord permite no máximo 25 fields; agrupa dias se necessário
+    chunk = max(1, math.ceil(len(dias) / 25))
+    for i in range(0, len(dias), chunk):
+        bloco = dias[i:i + chunk]
+        if len(bloco) == 1:
+            nome = f"📅 {bloco[0][0]}"
+            linhas = bloco[0][1]
+        else:
+            nome = f"📅 {bloco[0][0]} – {bloco[-1][0]}"
+            linhas = []
+            for dia, ls in bloco:
+                linhas.append(f"**{dia}**")
+                linhas.extend(ls)
         valor = "\n".join(linhas)
-        # field value limite: 1024 chars
         if len(valor) > 1024:
             valor = valor[:1020] + "\n…"
-        embed.add_field(name=f"📅 {dia}", value=valor, inline=False)
+        embed.add_field(name=nome, value=valor, inline=False)
 
     embed.set_footer(text="Use /copa-time <seleção> para detalhes de um time")
     return embed
