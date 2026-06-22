@@ -588,6 +588,9 @@ async def run_monitor_tick(bot: discord.Client, channels: list[tuple[int, int]])
 
         # ── Priming ──
         if not st["primed"] and status == "inprogress":
+            # Bot estava rodando antes do jogo começar → envia kickoff
+            if not _first_tick and not st["kicked_off"]:
+                await _send_all(bot, channels, embed=build_kickoff_embed(m))
             st["kicked_off"] = True
             data = await asyncio.to_thread(_load_fifa_live, m["fifa_id"])
             if data:
@@ -606,12 +609,6 @@ async def run_monitor_tick(bot: discord.Client, channels: list[tuple[int, int]])
                     st["2ht_sent"] = True
                 st["primed"] = True
             continue
-
-        # ── Início ──
-        if not st["kicked_off"] and status == "inprogress":
-            st["kicked_off"] = True
-            st["primed"] = True
-            await _send_all(bot, channels, embed=build_kickoff_embed(m))
 
         # ── Ao vivo ──
         if status == "inprogress":
