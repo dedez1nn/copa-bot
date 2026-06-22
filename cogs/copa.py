@@ -37,16 +37,11 @@ def _flag(en: str) -> str:
 
 # ── Embeds de consulta ────────────────────────────────────────────────────────
 
-def _embed_jogos_rodada(jogos: list[dict]) -> discord.Embed:
-    embed = discord.Embed(
-        title="🏆 Copa 2026 — Jogos da Rodada",
-        color=0x3B82F6,
-    )
-    if not jogos:
-        embed.description = "Nenhum jogo encontrado para a rodada atual."
-        return embed
+_DAYS_PER_PAGE = 4
 
-    # Agrupa por dia para evitar o limite de 4096 chars na description
+
+def _jogos_por_dia(jogos: list[dict]) -> list[tuple[str, str]]:
+    """Retorna lista de (dia, valor_field) para todos os dias com jogos."""
     por_dia: dict[str, list[str]] = {}
     for m in jogos:
         status = m["status"]
@@ -57,28 +52,63 @@ def _embed_jogos_rodada(jogos: list[dict]) -> discord.Embed:
         dia  = datetime.fromtimestamp(m["date_ts"], tz=BRT).strftime("%d/%m")
         linha = f"{icon} **{hf} {m['home_pt']}  {_score_str(m)}  {m['away_pt']} {af}** — {hora} BRT"
         por_dia.setdefault(dia, []).append(linha)
-
-    dias = list(por_dia.items())
-    # Discord permite no máximo 25 fields; agrupa dias se necessário
-    chunk = max(1, math.ceil(len(dias) / 25))
-    for i in range(0, len(dias), chunk):
-        bloco = dias[i:i + chunk]
-        if len(bloco) == 1:
-            nome = f"📅 {bloco[0][0]}"
-            linhas = bloco[0][1]
-        else:
-            nome = f"📅 {bloco[0][0]} – {bloco[-1][0]}"
-            linhas = []
-            for dia, ls in bloco:
-                linhas.append(f"**{dia}**")
-                linhas.extend(ls)
+    result = []
+    for dia, linhas in por_dia.items():
         valor = "\n".join(linhas)
         if len(valor) > 1024:
             valor = valor[:1020] + "\n…"
-        embed.add_field(name=nome, value=valor, inline=False)
+        result.append((dia, valor))
+    return result
 
-    embed.set_footer(text="Use /copa-time <seleção> para detalhes de um time")
+
+def _embed_jogos_page(dias: list[tuple[str, str]], page: int, total_pages: int) -> discord.Embed:
+    embed = discord.Embed(title="🏆 Copa 2026 — Jogos da Rodada", color=0x3B82F6)
+    start = page * _DAYS_PER_PAGE
+    for dia, valor in dias[start:start + _DAYS_PER_PAGE]:
+        embed.add_field(name=f"📅 {dia}", value=valor, inline=False)
+    footer = "Use /copa-time <seleção> para detalhes de um time"
+    if total_pages > 1:
+        footer = f"Página {page + 1}/{total_pages} · " + footer
+    embed.set_footer(text=footer)
     return embed
+
+
+def _embed_jogos_rodada(jogos: list[dict]) -> discord.Embed:
+    """Compatibilidade: retorna a primeira página (usado em testes)."""
+    if not jogos:
+        e = discord.Embed(title="🏆 Copa 2026 — Jogos da Rodada", color=0x3B82F6)
+        e.description = "Nenhum jogo encontrado para a rodada atual."
+        return e
+    dias = _jogos_por_dia(jogos)
+    return _embed_jogos_page(dias, 0, math.ceil(len(dias) / _DAYS_PER_PAGE))
+
+
+class JogosView(discord.ui.View):
+    def __init__(self, dias: list[tuple[str, str]]):
+        super().__init__(timeout=300)
+        self.dias = dias
+        self.page = 0
+        self.total = math.ceil(len(dias) / _DAYS_PER_PAGE)
+        self._sync()
+
+    def _sync(self):
+        self.btn_prev.disabled = self.page == 0
+        self.btn_next.disabled = self.page >= self.total - 1
+
+    def _embed(self) -> discord.Embed:
+        return _embed_jogos_page(self.dias, self.page, self.total)
+
+    @discord.ui.button(label="◀ Anterior", style=discord.ButtonStyle.secondary)
+    async def btn_prev(self, interaction: discord.Interaction, _btn: discord.ui.Button):
+        self.page -= 1
+        self._sync()
+        await interaction.response.edit_message(embed=self._embed(), view=self)
+
+    @discord.ui.button(label="Próximo ▶", style=discord.ButtonStyle.secondary)
+    async def btn_next(self, interaction: discord.Interaction, _btn: discord.ui.Button):
+        self.page += 1
+        self._sync()
+        await interaction.response.edit_message(embed=self._embed(), view=self)
 
 
 def _embed_team(team_query: str, matches: list[dict]) -> discord.Embed:
@@ -230,8 +260,15 @@ class CopaCog(commands.Cog):
         except Exception:
             await interaction.followup.send("❌ Erro ao buscar jogos. Tente novamente.", ephemeral=True)
             return
-        embed = _embed_jogos_rodada(jogos)
-        await interaction.followup.send(embed=embed)
+        if not jogos:
+            await interaction.followup.send("Nenhum jogo encontrado para a rodada atual.", ephemeral=True)
+            return
+        dias = _jogos_por_dia(jogos)
+        if len(dias) <= _DAYS_PER_PAGE:
+            await interaction.followup.send(embed=_embed_jogos_page(dias, 0, 1))
+        else:
+            view = JogosView(dias)
+            await interaction.followup.send(embed=view._embed(), view=view)
 
     @app_commands.command(name="copa-time", description="Jogos de uma seleção na Copa 2026")
     @app_commands.describe(selecao="Nome da seleção (ex: Brasil, Argentina, França)")

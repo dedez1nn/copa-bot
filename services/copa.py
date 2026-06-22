@@ -233,48 +233,43 @@ def _refresh_cache() -> None:
 
 
 def get_jogos_rodada() -> list[dict]:
+    """Retorna os jogos da 'rodada atual': janela de 7 dias centrada em hoje.
+
+    Janela: ontem até +5 dias. Se vazia, expande para o próximo lote de jogos
+    (máx. 7 dias a partir da data mais próxima no futuro) ou último lote passado.
+    """
     _refresh_cache()
     now = time.time()
     matches = _matches_cache or []
-
     if not matches:
         return []
 
-    # Clusteriza as datas de jogo: gap > 1 dia entre datas consecutivas = nova rodada
-    all_dates = sorted(set(
-        datetime.fromtimestamp(m["date_ts"], tz=BRT).date()
-        for m in matches if m["date_ts"]
-    ))
-    rodadas: list[list] = [[all_dates[0]]]
-    for d in all_dates[1:]:
-        if (d - rodadas[-1][-1]).days <= 1:
-            rodadas[-1].append(d)
-        else:
-            rodadas.append([d])
-
     today = datetime.fromtimestamp(now, tz=BRT).date()
 
-    # Rodada que contém hoje; se estiver no intervalo, pega a mais próxima
-    best: list | None = None
-    best_dist: float = float("inf")
-    for rodada in rodadas:
-        if rodada[0] <= today <= rodada[-1]:
-            best = rodada
-            break
-        dist = min(abs((today - rodada[0]).days), abs((today - rodada[-1]).days))
-        if dist < best_dist:
-            best_dist = dist
-            best = rodada
+    def _date(m):
+        return datetime.fromtimestamp(m["date_ts"], tz=BRT).date()
 
-    if not best:
-        return []
+    # Janela principal: ontem → hoje + 5
+    w_start = today - timedelta(days=1)
+    w_end   = today + timedelta(days=5)
+    in_window = [m for m in matches if w_start <= _date(m) <= w_end]
+    if in_window:
+        return sorted(in_window, key=lambda m: m["date_ts"])
 
-    d_start, d_end = best[0], best[-1]
+    # Sem jogos na janela — próximos jogos futuros
+    future = [m for m in matches if _date(m) >= today]
+    if future:
+        pivot = _date(min(future, key=lambda m: m["date_ts"]))
+        return sorted(
+            [m for m in matches if pivot <= _date(m) <= pivot + timedelta(days=6)],
+            key=lambda m: m["date_ts"],
+        )
+
+    # Copa encerrada — últimos jogos disputados
+    past = sorted(matches, key=lambda m: -m["date_ts"])
+    pivot = _date(past[0])
     return sorted(
-        [
-            m for m in matches
-            if d_start <= datetime.fromtimestamp(m["date_ts"], tz=BRT).date() <= d_end
-        ],
+        [m for m in matches if pivot - timedelta(days=6) <= _date(m) <= pivot],
         key=lambda m: m["date_ts"],
     )
 
