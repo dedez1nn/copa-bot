@@ -1,79 +1,69 @@
-import aiosqlite
-from pathlib import Path
+"""Camada de dados — MongoDB via Motor (async)."""
 
-DB_PATH = Path.home() / ".local" / "share" / "copa-discord" / "bot.db"
+import os
+import logging
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
+
+logger = logging.getLogger(__name__)
+
+_client: AsyncIOMotorClient | None = None
+_db: AsyncIOMotorDatabase | None = None
+
+
+def _col(name: str):
+    return _db[name]
 
 
 async def init_db() -> None:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS copa_channels (
-                guild_id INTEGER PRIMARY KEY,
-                channel_id INTEGER NOT NULL
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS selfbot_trap_channels (
-                guild_id INTEGER PRIMARY KEY,
-                channel_id INTEGER NOT NULL
-            )
-        """)
-        await db.commit()
+    global _client, _db
+    uri = os.environ.get("MONGO_URI", "mongodb://localhost:27017")
+    db_name = os.environ.get("MONGO_INITDB_DATABASE", "copa_discord")
+    _client = AsyncIOMotorClient(uri)
+    _db = _client[db_name]
+    await _db["copa_channels"].create_index("guild_id", unique=True)
+    await _db["selfbot_trap_channels"].create_index("guild_id", unique=True)
+    logger.info("MongoDB conectado: %s", uri.split("@")[-1])
 
+
+# ── Copa channels ─────────────────────────────────────────────────────────────
 
 async def get_copa_channel(guild_id: int) -> int | None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            "SELECT channel_id FROM copa_channels WHERE guild_id = ?", (guild_id,)
-        )
-        row = await cursor.fetchone()
-        return row[0] if row else None
+    doc = await _col("copa_channels").find_one({"guild_id": guild_id})
+    return doc["channel_id"] if doc else None
 
 
 async def set_copa_channel(guild_id: int, channel_id: int) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "INSERT OR REPLACE INTO copa_channels (guild_id, channel_id) VALUES (?, ?)",
-            (guild_id, channel_id),
-        )
-        await db.commit()
+    await _col("copa_channels").update_one(
+        {"guild_id": guild_id},
+        {"$set": {"channel_id": channel_id}},
+        upsert=True,
+    )
 
 
 async def get_all_copa_channels() -> list[tuple[int, int]]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT guild_id, channel_id FROM copa_channels")
-        return await cursor.fetchall()
+    cursor = _col("copa_channels").find({})
+    return [(doc["guild_id"], doc["channel_id"]) async for doc in cursor]
 
+
+# ── Selfbot trap channels ─────────────────────────────────────────────────────
 
 async def get_selfbot_channel(guild_id: int) -> int | None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            "SELECT channel_id FROM selfbot_trap_channels WHERE guild_id = ?", (guild_id,)
-        )
-        row = await cursor.fetchone()
-        return row[0] if row else None
+    doc = await _col("selfbot_trap_channels").find_one({"guild_id": guild_id})
+    return doc["channel_id"] if doc else None
 
 
 async def set_selfbot_channel(guild_id: int, channel_id: int) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "INSERT OR REPLACE INTO selfbot_trap_channels (guild_id, channel_id) VALUES (?, ?)",
-            (guild_id, channel_id),
-        )
-        await db.commit()
+    await _col("selfbot_trap_channels").update_one(
+        {"guild_id": guild_id},
+        {"$set": {"channel_id": channel_id}},
+        upsert=True,
+    )
 
 
 async def remove_selfbot_channel(guild_id: int) -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "DELETE FROM selfbot_trap_channels WHERE guild_id = ?", (guild_id,)
-        )
-        await db.commit()
+    await _col("selfbot_trap_channels").delete_one({"guild_id": guild_id})
 
 
 async def get_all_selfbot_channels() -> dict[int, int]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT guild_id, channel_id FROM selfbot_trap_channels")
-        rows = await cursor.fetchall()
-        return {guild_id: channel_id for guild_id, channel_id in rows}
+    cursor = _col("selfbot_trap_channels").find({})
+    return {doc["guild_id"]: doc["channel_id"] async for doc in cursor}
