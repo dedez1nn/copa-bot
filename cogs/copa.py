@@ -236,15 +236,47 @@ class CopaCog(commands.Cog):
         embed = _embed_artilharia(scorers)
         await interaction.followup.send(embed=embed)
 
-    @app_commands.command(name="config-copa", description="Define o canal para notificações da Copa (apenas admins)")
-    @app_commands.describe(canal="Canal onde as notificações serão enviadas")
+    @app_commands.command(name="config-copa", description="Guia e configuração das notificações da Copa (apenas admins)")
+    @app_commands.describe(canal="(Opcional) Canal onde as notificações automáticas serão enviadas")
     @app_commands.default_permissions(administrator=True)
-    async def cmd_config_copa(self, interaction: discord.Interaction, canal: discord.TextChannel) -> None:
-        await set_copa_channel(interaction.guild_id, canal.id)
-        self._monitor_channels = await get_all_copa_channels()
-        await interaction.response.send_message(
-            f"✅ Notificações da Copa configuradas para {canal.mention}.", ephemeral=True
+    async def cmd_config_copa(
+        self, interaction: discord.Interaction, canal: discord.TextChannel | None = None
+    ) -> None:
+        guild_id = interaction.guild_id
+
+        if canal:
+            await set_copa_channel(guild_id, canal.id)
+            self._monitor_channels = await get_all_copa_channels()
+
+        channel_id = await get_copa_channel(guild_id)
+        ch = interaction.guild.get_channel(channel_id) if channel_id else None
+        canal_str = ch.mention if ch else "❌ Não configurado"
+
+        embed = discord.Embed(
+            title="🏆 Copa 2026 — Painel de Configuração",
+            color=0x3B82F6,
         )
+        embed.add_field(
+            name="📡 Notificações automáticas",
+            value=(
+                f"**Canal:** {canal_str}\n"
+                "**Resumo diário:** 09:00 BRT (automático)\n"
+                "**Alertas ao vivo:** gols, cartões, escalações, VAR"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="📋 Comandos disponíveis",
+            value=(
+                "`/copa` — Jogos da rodada (janela de 48h)\n"
+                "`/copa-time <seleção>` — Todos os jogos de uma seleção\n"
+                "`/copa-grupo <letra>` — Jogos de um grupo (A–L)\n"
+                "`/copa-artilharia` — Top artilheiros da Copa"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Use /config-copa #canal para definir onde as notificações chegam")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:

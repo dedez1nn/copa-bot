@@ -11,9 +11,12 @@ from discord.ext import commands
 
 from services.db import (
     get_all_selfbot_channels,
+    get_all_selfbot_log_channels,
     get_selfbot_channel,
     remove_selfbot_channel,
+    remove_selfbot_log_channel,
     set_selfbot_channel,
+    set_selfbot_log_channel,
 )
 
 logger = logging.getLogger(__name__)
@@ -26,6 +29,7 @@ _recent: dict[int, deque] = defaultdict(lambda: deque(maxlen=100))
 
 # Canal trap por guild: guild_id -> channel_id (cache em memória)
 _trap_channels: dict[int, int] = {}
+_log_channels: dict[int, int] = {}
 
 
 class SelfbotTrapCog(commands.Cog):
@@ -33,8 +37,9 @@ class SelfbotTrapCog(commands.Cog):
         self.bot = bot
 
     async def cog_load(self) -> None:
-        global _trap_channels
+        global _trap_channels, _log_channels
         _trap_channels = await get_all_selfbot_channels()
+        _log_channels = await get_all_selfbot_log_channels()
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
@@ -66,7 +71,6 @@ class SelfbotTrapCog(commands.Cog):
             member, member.id, guild.name, message.channel.name,
         )
 
-        # Tenta deletar a mensagem do canal armadilha
         try:
             await message.delete()
         except discord.Forbidden:
@@ -74,9 +78,8 @@ class SelfbotTrapCog(commands.Cog):
         except Exception:
             logger.exception("Erro ao deletar mensagem do canal armadilha")
 
-        # Varredura: busca mensagens recentes do mesmo usuário em outros canais
         now = time.time()
-        to_delete: list[tuple[int, int]] = []  # (channel_id, message_id)
+        to_delete: list[tuple[int, int]] = []
         for entry in list(_recent[member.id]):
             g_id, ch_id, msg_id, ts = entry
             if g_id != guild.id:
@@ -87,9 +90,7 @@ class SelfbotTrapCog(commands.Cog):
                 to_delete.append((ch_id, msg_id))
 
         if to_delete:
-            logger.info(
-                "Varrendo %d mensagens recentes de %s em outros canais", len(to_delete), member
-            )
+            logger.info("Varrendo %d mensagens recentes de %s em outros canais", len(to_delete), member)
             for ch_id, msg_id in to_delete:
                 ch = guild.get_channel(ch_id)
                 if ch is None:
@@ -104,64 +105,82 @@ class SelfbotTrapCog(commands.Cog):
                 except Exception:
                     logger.exception("Erro ao deletar mensagem no sweep")
 
-        # Limpa o cache do usuário
         _recent.pop(member.id, None)
 
-        # Tenta kickar o usuário
-        if not isinstance(member, discord.Member):
-            return
+        kicked = False
+        if isinstance(member, discord.Member):
+            try:
+                await member.kick(reason="Selfbot detectado: enviou mensagem em canal armadilha")
+                kicked = True
+                logger.info("Usuário %s kickado por selfbot em %s", member, guild.name)
+            except discord.Forbidden:
+                logger.warning("Sem permissão para kickar %s em %s", member, guild.name)
+            except Exception:
+                logger.exception("Erro ao kickar usuário selfbot")
 
-        try:
-            await member.kick(reason="Selfbot detectado: enviou mensagem em canal armadilha")
-            logger.info("Usuário %s kickado por selfbot em %s", member, guild.name)
-        except discord.Forbidden:
-            logger.warning("Sem permissão para kickar %s em %s", member, guild.name)
-        except Exception:
-            logger.exception("Erro ao kickar usuário selfbot")
+        # Envia log no canal configurado ou fallback para canal do sistema
+        log_channel_id = _log_channels.get(guild.id)
+        log_ch = self.bot.get_channel(log_channel_id) if log_channel_id else guild.system_channel
 
-        # Aviso no log do servidor (canal sistema se configurado)
-        try:
-            system_ch = guild.system_channel
-            if system_ch:
-                await system_ch.send(
-                    f"🚨 **Selfbot detectado e removido:** `{member}` ({member.id})\n"
-                    f"O usuário foi kickado automaticamente e {len(to_delete)} "
-                    f"mensagem(ns) foram apagadas em outros canais."
-                )
-        except Exception:
-            pass
+        if log_ch:
+            try:
+                if log_channel_id:
+                    embed = discord.Embed(
+                        title="🚨 Selfbot Detectado",
+                        color=0xFF4444,
+                        timestamp=discord.utils.utcnow(),
+                    )
+                    embed.add_field(name="Usuário", value=f"{member} (`{member.id}`)", inline=True)
+                    embed.add_field(name="Canal armadilha", value=message.channel.mention, inline=True)
+                    embed.add_field(name="Mensagens varridas", value=str(len(to_delete)), inline=True)
+                    embed.add_field(name="Ação", value="✅ Kickado" if kicked else "⚠️ Sem permissão para kickar", inline=True)
+                    embed.set_thumbnail(url=member.display_avatar.url)
+                    await log_ch.send(embed=embed)
+                else:
+                    await log_ch.send(
+                        f"🚨 **Selfbot detectado e removido:** `{member}` ({member.id})\n"
+                        f"Kickado automaticamente. {len(to_delete)} mensagem(ns) apagada(s) em outros canais."
+                    )
+            except Exception:
+                logger.exception("Erro ao enviar log de selfbot")
 
     # ── Slash commands ────────────────────────────────────────────────────────
 
     @app_commands.command(
         name="config-selfbot",
-        description="Configura o canal armadilha de selfbot (apenas admins)",
+        description="Configura a armadilha de selfbot (apenas admins)",
     )
-    @app_commands.describe(canal="Canal que servirá de armadilha — qualquer mensagem dispara o kick")
+    @app_commands.describe(
+        canal="Canal armadilha — qualquer mensagem aqui dispara o kick",
+        canal_log="(Opcional) Canal onde o bot registra cada detecção com detalhes",
+    )
     @app_commands.default_permissions(administrator=True)
     async def cmd_config_selfbot(
-        self, interaction: discord.Interaction, canal: discord.TextChannel
+        self,
+        interaction: discord.Interaction,
+        canal: discord.TextChannel,
+        canal_log: discord.TextChannel | None = None,
     ) -> None:
         guild_id = interaction.guild_id
         await set_selfbot_channel(guild_id, canal.id)
         _trap_channels[guild_id] = canal.id
 
-        embed = discord.Embed(
-            title="🚨 Armadilha de Selfbot Configurada",
-            color=0xFF4444,
-        )
-        embed.add_field(
-            name="Canal armadilha",
-            value=canal.mention,
-            inline=False,
-        )
+        if canal_log:
+            await set_selfbot_log_channel(guild_id, canal_log.id)
+            _log_channels[guild_id] = canal_log.id
+
+        embed = discord.Embed(title="🚨 Armadilha de Selfbot Configurada", color=0xFF4444)
+        embed.add_field(name="Canal armadilha", value=canal.mention, inline=True)
+
+        if canal_log:
+            embed.add_field(name="Canal de log", value=canal_log.mention, inline=True)
+
         embed.add_field(
             name="Como funciona",
             value=(
-                "Qualquer usuário que enviar uma mensagem nesse canal será **kickado automaticamente**.\n"
-                f"O bot também varre mensagens enviadas em outros canais nos últimos **{SWEEP_WINDOW} segundos** "
-                "e as apaga.\n\n"
-                "⚠️ Não envie mensagens nesse canal!"
+                "Qualquer usuário que enviar uma mensagem no canal armadilha será **kickado automaticamente**.\n"
+                f"O bot também varre mensagens dos últimos **{SWEEP_WINDOW}s** em outros canais e as apaga.\n\n"
+                "⚠️ Não envie mensagens no canal armadilha!"
             ),
             inline=False,
         )
@@ -176,9 +195,11 @@ class SelfbotTrapCog(commands.Cog):
     async def cmd_selfbot_remover(self, interaction: discord.Interaction) -> None:
         guild_id = interaction.guild_id
         await remove_selfbot_channel(guild_id)
+        await remove_selfbot_log_channel(guild_id)
         _trap_channels.pop(guild_id, None)
+        _log_channels.pop(guild_id, None)
         await interaction.response.send_message(
-            "✅ Armadilha de selfbot removida.", ephemeral=True
+            "✅ Armadilha de selfbot e canal de log removidos.", ephemeral=True
         )
 
     @app_commands.command(
@@ -189,6 +210,7 @@ class SelfbotTrapCog(commands.Cog):
     async def cmd_selfbot_status(self, interaction: discord.Interaction) -> None:
         guild_id = interaction.guild_id
         channel_id = _trap_channels.get(guild_id)
+        log_channel_id = _log_channels.get(guild_id)
 
         embed = discord.Embed(title="🚨 Status — Armadilha de Selfbot", color=0xFF4444)
         if channel_id:
@@ -196,11 +218,14 @@ class SelfbotTrapCog(commands.Cog):
             mention = ch.mention if ch else f"<canal removido: {channel_id}>"
             embed.add_field(name="Status", value="🟢 Ativo", inline=True)
             embed.add_field(name="Canal armadilha", value=mention, inline=True)
-            embed.add_field(
-                name="Janela de varredura",
-                value=f"{SWEEP_WINDOW} segundos",
-                inline=True,
-            )
+            embed.add_field(name="Janela de varredura", value=f"{SWEEP_WINDOW}s", inline=True)
+
+            if log_channel_id:
+                log_ch = interaction.guild.get_channel(log_channel_id)
+                log_mention = log_ch.mention if log_ch else f"<canal removido: {log_channel_id}>"
+                embed.add_field(name="Canal de log", value=log_mention, inline=True)
+            else:
+                embed.add_field(name="Canal de log", value="Canal do sistema (padrão)", inline=True)
         else:
             embed.add_field(name="Status", value="🔴 Inativo", inline=True)
             embed.description = "Use `/config-selfbot` para configurar."
