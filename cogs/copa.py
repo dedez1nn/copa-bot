@@ -8,9 +8,12 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+import time
+
 from services import copa as copa_svc
 from services import copa_monitor as monitor
 from services import gate
+from services import youtube
 from services.db import get_all_copa_channels, get_copa_channel, set_copa_channel
 
 logger = logging.getLogger(__name__)
@@ -260,6 +263,32 @@ class CopaCog(commands.Cog):
         embed = _embed_artilharia(scorers)
         await interaction.followup.send(embed=embed)
 
+    @app_commands.command(name="copa-quando", description="Mostra em quantos minutos começa a próxima partida")
+    async def cmd_copa_quando(self, interaction: discord.Interaction) -> None:
+        if not await gate.allowed(interaction):
+            return
+        await interaction.response.defer()
+        try:
+            matches = await asyncio.to_thread(copa_svc.get_jogos_rodada)
+        except Exception:
+            await interaction.followup.send("❌ Erro ao buscar jogos.", ephemeral=True)
+            return
+
+        now = time.time()
+        upcoming = sorted(
+            [m for m in matches if m["status"] == "notstarted" and m["date_ts"] > now],
+            key=lambda m: m["date_ts"],
+        )
+        if not upcoming:
+            await interaction.followup.send("Nenhuma partida agendada encontrada.", ephemeral=True)
+            return
+
+        m = upcoming[0]
+        mins = max(1, int((m["date_ts"] - now) / 60))
+        live_url = await asyncio.to_thread(youtube.get_cazetv_live, m["date_ts"])
+        embed = monitor.build_pre_game_embed(m, mins, live_url)
+        await interaction.followup.send(embed=embed)
+
     @app_commands.command(name="config-copa", description="Guia e configuração das notificações da Copa (apenas admins)")
     @app_commands.describe(canal="(Opcional) Canal onde as notificações automáticas serão enviadas")
     @app_commands.default_permissions(administrator=True)
@@ -293,6 +322,7 @@ class CopaCog(commands.Cog):
             name="📋 Comandos disponíveis",
             value=(
                 "`/copa` — Todos os jogos da rodada atual\n"
+                "`/copa-quando` — Em quantos minutos começa a próxima partida\n"
                 "`/copa-time <seleção>` — Todos os jogos de uma seleção\n"
                 "`/copa-grupo <letra>` — Jogos de um grupo (A–L)\n"
                 "`/copa-artilharia` — Top artilheiros da Copa"
