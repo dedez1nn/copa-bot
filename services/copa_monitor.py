@@ -12,6 +12,7 @@ from services.copa import (
     _load_fifa_live, _player_map_fifa,
     get_jogos_rodada, is_brazil_match, flag,
 )
+from services import youtube
 
 logger = logging.getLogger(__name__)
 
@@ -325,11 +326,14 @@ async def run_monitor_tick(bot: discord.Client, channels: list[tuple[int, int]])
         if not st["announced_30"] and status == "notstarted" and 0 < (ts - now) <= 1800:
             st["announced_30"] = True
             mins = max(1, int((ts - now) / 60))
+            live_url = await asyncio.to_thread(youtube.get_cazetv_live)
+            live_line = f"\n📺 **Assista ao vivo:** {live_url}" if live_url else ""
             await _send_all(
                 bot, channels,
                 content=(
                     f"⏰ **Em {mins} minuto{'s' if mins != 1 else ''}!**\n"
                     f"⚽ **{hf} {m['home_pt']} x {m['away_pt']} {af}**"
+                    f"{live_line}"
                 ),
             )
 
