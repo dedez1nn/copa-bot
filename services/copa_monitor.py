@@ -559,6 +559,16 @@ async def _check_fifa_timeline(bot, channels, m: dict, st: dict) -> None:
                 msg = f"🚩 **Impedimento!** — {minute}'"
             await _send_all(bot, channels, content=msg)
 
+        elif etype == 16:  # Escanteio
+            player = pmap.get(player_id, "") if player_id else ""
+            if player:
+                msg = f"🚩 **Escanteio!** {player} ({team_flag} {team_name}) — {minute}'"
+            elif team_name != "?":
+                msg = f"🚩 **Escanteio!** {team_flag} {team_name} — {minute}'"
+            else:
+                msg = f"🚩 **Escanteio!** — {minute}'"
+            await _send_all(bot, channels, content=msg)
+
         elif etype == 18:  # Falta
             player = pmap.get(player_id, "") if player_id else ""
             if player:
@@ -568,6 +578,24 @@ async def _check_fifa_timeline(bot, channels, m: dict, st: dict) -> None:
             else:
                 msg = f"⚠️ **Falta!** — {minute}'"
             await _send_all(bot, channels, content=msg)
+
+        elif etype == 57:  # Gol evitado
+            player = pmap.get(player_id, "") if player_id else ""
+            if player:
+                msg = f"🧤 **Gol evitado!** {player} ({team_flag} {team_name}) — {minute}'"
+            elif team_name != "?":
+                msg = f"🧤 **Gol evitado!** {team_flag} {team_name} — {minute}'"
+            else:
+                msg = f"🧤 **Gol evitado!** — {minute}'"
+            await _send_all(bot, channels, content=msg)
+
+        elif etype == 83:  # Atraso / pausa
+            desc = next(
+                (d.get("Description") for d in (event.get("EventDescription") or [])
+                 if d.get("Locale") == "pt-BR"),
+                "Jogo interrompido",
+            )
+            await _send_all(bot, channels, content=f"⏸️ **{desc}** — {minute}'")
 
 
 # ── Verificação de escalação ──────────────────────────────────────────────────
