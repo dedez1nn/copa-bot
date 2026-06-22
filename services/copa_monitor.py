@@ -357,9 +357,12 @@ async def _send_all(bot: discord.Client, channels: list[tuple[int, int]], **kwar
 # ── Verificação ao vivo via FIFA ──────────────────────────────────────────────
 
 async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
+    label = f"{m['home_pt']} x {m['away_pt']}"
+    logger.debug("[live] fetch %s (id=%s)", label, m["fifa_id"])
     data = await asyncio.to_thread(_load_fifa_live, m["fifa_id"])
     if not data:
         st["fifa_was_blocked"] = True
+        logger.warning("[live] API bloqueada para %s", label)
         return
 
     home = data.get("HomeTeam") or {}
@@ -375,6 +378,8 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
     if not st["home_team_id"]:
         st["home_team_id"] = home.get("IdTeam")
         st["away_team_id"] = away.get("IdTeam")
+
+    logger.info("[live] %s | período=%s status=%s placar=%s-%s", label, period, match_status, h_score, a_score)
 
     if st.get("fifa_was_blocked"):
         st["fifa_was_blocked"] = False
@@ -409,6 +414,7 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
         gkey = (g.get("IdPlayer"), g.get("Minute"), g.get("Period"), g.get("Type"))
         if gkey in st["seen_goals"]:
             continue
+        logger.info("[live] novo gol detectado: %s %s", team_pt, gkey)
         st["seen_goals"].add(gkey)
         player = pmap.get(str(g.get("IdPlayer") or ""), "?")
         minute = g.get("Minute", "?")
@@ -435,6 +441,7 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
         st["seen_cards"].add(ckey)
         if b.get("Card") != 2:
             continue
+        logger.info("[live] vermelho detectado: %s %s", team_pt, ckey)
         player = pmap.get(str(b.get("IdPlayer") or ""), "?")
         minute = b.get("Minute", "?")
         st["pending_cards"][ckey] = {
@@ -478,6 +485,7 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
     # -- transições de período --
     last = st["last_period"]
     if period != last:
+        logger.info("[live] transição de período: %s → %s (%s)", last, period, label)
         if last == 3 and not st["ht_sent"]:
             st["ht_sent"] = True
             await _send_all(bot, channels, embed=build_ht_embed(m, h_score, a_score))
@@ -511,15 +519,22 @@ def _team_from_event(m: dict, st: dict, team_id) -> tuple[str, str]:
 
 
 async def _check_fifa_timeline(bot, channels, m: dict, st: dict) -> None:
+    label = f"{m['home_pt']} x {m['away_pt']}"
+    logger.debug("[timeline] fetch %s (id=%s stage=%s)", label, m.get("fifa_id"), m.get("stage_id"))
     events = await asyncio.to_thread(_load_fifa_timeline, m)
-    if not events:
+    if events is None:
+        logger.warning("[timeline] sem dados para %s", label)
         return
+
+    novos = [e for e in events if e.get("EventId") and e["EventId"] not in st["seen_timeline_events"]]
+    logger.info("[timeline] %s | total=%d novos=%d", label, len(events), len(novos))
 
     for event in events:
         eid = event.get("EventId")
         if not eid or eid in st["seen_timeline_events"]:
             continue
         st["seen_timeline_events"].add(eid)
+        logger.info("[timeline] novo evento eid=%s type=%s min=%s", eid, event.get("Type"), event.get("MatchMinute"))
 
         etype = event.get("Type")
         minute = event.get("MatchMinute", "?")
@@ -724,6 +739,7 @@ async def run_monitor_tick(bot: discord.Client, channels: list[tuple[int, int]])
 
         # ── Priming ──
         if not st["primed"] and status == "inprogress":
+            logger.info("[priming] %s x %s (first_tick=%s)", m["home_pt"], m["away_pt"], _first_tick)
             st["kicked_off"] = True
             data = await asyncio.to_thread(_load_fifa_live, m["fifa_id"])
             if data:
@@ -744,24 +760,30 @@ async def run_monitor_tick(bot: discord.Client, channels: list[tuple[int, int]])
                 if period is not None and period >= 4:
                     st["2ht_sent"] = True
                 tl_events = await asyncio.to_thread(_load_fifa_timeline, m)
+                primed_tl = 0
                 for ev in (tl_events or []):
                     eid = ev.get("EventId")
                     etype_ev = ev.get("Type")
                     if not eid:
                         continue
                     if etype_ev == 7:
-                        # Bot iniciou com jogo em andamento → suprime kickoff
-                        # Bot estava rodando → não marca, timeline vai disparar
                         if _first_tick:
                             st["seen_timeline_events"].add(eid)
                             st["kickoff_notified"] = True
                     else:
                         st["seen_timeline_events"].add(eid)
+                        primed_tl += 1
+                logger.info("[priming] concluído: gols=%d cartões=%d tl_eventos=%d",
+                            len(st["seen_goals"]), len(st["seen_cards"]), primed_tl)
                 st["primed"] = True
+            else:
+                logger.warning("[priming] live API sem dados para %s x %s", m["home_pt"], m["away_pt"])
             continue
 
         # ── Ao vivo ──
         if status == "inprogress":
+            logger.debug("[tick] monitorando %s x %s (primed=%s kicked_off=%s)",
+                         m["home_pt"], m["away_pt"], st["primed"], st["kicked_off"])
             await _check_fifa_live(bot, channels, m, st)
             await _check_fifa_timeline(bot, channels, m, st)
 
