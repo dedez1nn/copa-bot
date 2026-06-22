@@ -539,6 +539,16 @@ async def _check_fifa_timeline(bot, channels, m: dict, st: dict) -> None:
                 content=f"🎯 **Pênalti!** {team_flag} **{team_name}** — {minute}'",
             )
 
+        elif etype == 12:  # Chute a gol
+            player = pmap.get(player_id, "") if player_id else ""
+            if player:
+                msg = f"🥅 **Chute a gol!** {player} ({team_flag} {team_name}) — {minute}'"
+            elif team_name != "?":
+                msg = f"🥅 **Chute a gol!** {team_flag} {team_name} — {minute}'"
+            else:
+                msg = f"🥅 **Chute a gol!** — {minute}'"
+            await _send_all(bot, channels, content=msg)
+
         elif etype == 15:  # Impedimento
             player = pmap.get(player_id, "") if player_id else ""
             if player:
@@ -547,6 +557,16 @@ async def _check_fifa_timeline(bot, channels, m: dict, st: dict) -> None:
                 msg = f"🚩 **Impedimento!** {team_flag} {team_name} — {minute}'"
             else:
                 msg = f"🚩 **Impedimento!** — {minute}'"
+            await _send_all(bot, channels, content=msg)
+
+        elif etype == 18:  # Falta
+            player = pmap.get(player_id, "") if player_id else ""
+            if player:
+                msg = f"⚠️ **Falta!** {player} ({team_flag} {team_name}) — {minute}'"
+            elif team_name != "?":
+                msg = f"⚠️ **Falta!** {team_flag} {team_name} — {minute}'"
+            else:
+                msg = f"⚠️ **Falta!** — {minute}'"
             await _send_all(bot, channels, content=msg)
 
 
