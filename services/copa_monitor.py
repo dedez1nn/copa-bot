@@ -65,6 +65,8 @@ def _state(key: str) -> dict:
             "away_team_id": None,
             "pmap": {},
             "kickoff_notified": False,
+            "h_score": 0,
+            "a_score": 0,
         }
     return _watch[key]
 
@@ -503,16 +505,13 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
             await _send_all(bot, channels, embed=build_ht_embed(m, h_score, a_score))
 
         if period == 4 and not st["2ht_sent"]:
-            has_2t = any(
-                g.get("Period") == 4
-                for side in (home, away)
-                for g in (side.get("Goals") or []) + (side.get("Bookings") or [])
-            )
-            if has_2t:
-                st["2ht_sent"] = True
-                await _send_all(bot, channels, embed=build_2ht_embed(m, h_score, a_score, data))
+            st["2ht_sent"] = True
+            await _send_all(bot, channels, embed=build_2ht_embed(m, h_score, a_score, data))
 
         st["last_period"] = period
+
+    st["h_score"] = h_score
+    st["a_score"] = a_score
 
     if not st["final_sent"] and match_status == 0 and st["kicked_off"]:
         st["final_sent"] = True
@@ -597,10 +596,43 @@ async def _check_fifa_timeline(bot, channels, m: dict, st: dict) -> None:
             p_out = pmap.get(sub_id, "?") if sub_id else "?"
             await _send_event(f"↕️ **Substituição!** {p_in} ← {p_out} ({team_flag} {team_name}) — {minute}'")
 
-        elif etype == 7:  # Horário de início
-            if not st["kickoff_notified"]:
-                st["kickoff_notified"] = True
-                await _send_all(bot, channels, embed=build_kickoff_embed(m))
+        elif etype == 7:  # Kickoff / reinício de período
+            try:
+                raw_min = str(minute).split("+")[0].strip()
+                minute_int = int(raw_min) if raw_min.isdigit() else 0
+            except (ValueError, TypeError):
+                minute_int = 0
+
+            if minute_int >= 46:
+                # Minuto 46+: é início do 2º tempo SÓ SE o kickoff já foi notificado.
+                # Se kickoff_notified == False, o bot iniciou durante acréscimo — não faz nada.
+                if st["kickoff_notified"] and not st["2ht_sent"]:
+                    logger.info("[timeline] 2º tempo detectado (min=%s) — %s", minute, label)
+                    st["2ht_sent"] = True
+                    h = st.get("h_score", 0)
+                    a = st.get("a_score", 0)
+                    data2 = await asyncio.to_thread(_load_fifa_live, m["fifa_id"])
+                    if data2:
+                        await _send_all(bot, channels, embed=build_2ht_embed(m, h, a, data2))
+                    else:
+                        hf_ = flag(m["home_en"])
+                        af_ = flag(m["away_en"])
+                        embed2 = discord.Embed(
+                            title="🔔 2º Tempo Iniciado",
+                            description=f"**{hf_} {m['home_pt']}  {h} — {a}  {m['away_pt']} {af_}**",
+                            color=0x009C3B if is_brazil_match(m) else 0xFFA500,
+                        )
+                        embed2.set_footer(text="Copa do Mundo FIFA™ 2026")
+                        embed2.timestamp = discord.utils.utcnow()
+                        await _send_all(bot, channels, embed=embed2)
+                else:
+                    logger.info("[timeline] Type7 min=%s ignorado (kickoff_notified=%s 2ht_sent=%s)",
+                                minute, st["kickoff_notified"], st["2ht_sent"])
+            else:
+                # Minuto < 46: é o kickoff real do jogo
+                if not st["kickoff_notified"]:
+                    st["kickoff_notified"] = True
+                    await _send_all(bot, channels, embed=build_kickoff_embed(m))
 
         elif etype == 6:  # Pênalti marcado (árbitro)
             await _send_event(f"🎯 **Pênalti!** {team_flag} **{team_name}** — {minute}'")
