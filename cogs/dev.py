@@ -1,7 +1,9 @@
 """Cog Dev — comandos de teste (admin) para disparar cada embed individualmente."""
 
+import asyncio
 import time
 import logging
+from datetime import datetime
 
 import discord
 from discord import app_commands
@@ -13,9 +15,36 @@ from cogs.copa import (
     _embed_jogos_rodada,
     _embed_team,
 )
+from services import copa as copa_svc
+from services import youtube
+from services.copa import BRT
 from services.copa_monitor import build_lineup_embed
 
 logger = logging.getLogger(__name__)
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+async def _partida_proxima() -> dict | None:
+    """Retorna a partida mais próxima do momento atual via API real."""
+    try:
+        matches = await asyncio.to_thread(copa_svc.get_jogos_rodada)
+    except Exception:
+        return None
+    inprogress = [m for m in matches if m["status"] == "inprogress"]
+    if inprogress:
+        return inprogress[0]
+    upcoming = sorted([m for m in matches if m["status"] == "notstarted"], key=lambda m: m["date_ts"])
+    if upcoming:
+        return upcoming[0]
+    finished = sorted([m for m in matches if m["status"] == "finished"], key=lambda m: -m["date_ts"])
+    return finished[0] if finished else None
+
+
+def _jogo(m: dict) -> str:
+    hf = copa_svc.flag(m["home_en"])
+    af = copa_svc.flag(m["away_en"])
+    return f"{hf} **{m['home_pt']} x {m['away_pt']}** {af}"
+
 
 # ── Helpers para dados falsos ─────────────────────────────────────────────────
 
@@ -168,6 +197,136 @@ class DevCog(commands.Cog):
         await interaction.followup.send(
             content="📋 **Escalação** — Brasil x Argentina",
             embed=embed,
+        )
+
+
+    # ── Notificações automáticas (partida mais próxima) ──────────────────────
+
+    @app_commands.command(name="teste-resumo-diario", description="[TESTE] Resumo dos jogos de hoje")
+    @app_commands.default_permissions(administrator=True)
+    async def teste_resumo_diario(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        try:
+            jogos = await asyncio.to_thread(copa_svc.get_jogos_hoje)
+        except Exception:
+            await interaction.followup.send("❌ Erro ao buscar jogos.", ephemeral=True)
+            return
+        if not jogos:
+            await interaction.followup.send("Nenhum jogo agendado para hoje.", ephemeral=True)
+            return
+        linhas = ["📅 **Jogos de hoje — Copa 2026**\n"]
+        for m in sorted(jogos, key=lambda x: x["date_ts"]):
+            hora = datetime.fromtimestamp(m["date_ts"], tz=BRT).strftime("%H:%M")
+            grupo = m.get("group") or m.get("stage") or ""
+            hf = copa_svc.flag(m["home_en"])
+            af = copa_svc.flag(m["away_en"])
+            linhas.append(f"⚽ **{hf} {m['home_pt']} x {m['away_pt']} {af}**  {hora} BRT  *{grupo}*")
+        await interaction.followup.send("\n".join(linhas))
+
+    @app_commands.command(name="teste-aviso-1hora", description="[TESTE] Aviso de 1 hora para a partida mais próxima")
+    @app_commands.default_permissions(administrator=True)
+    async def teste_aviso_1hora(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        m = await _partida_proxima()
+        if not m:
+            await interaction.followup.send("❌ Nenhuma partida encontrada.", ephemeral=True)
+            return
+        live_url = await asyncio.to_thread(youtube.get_cazetv_live)
+        live_line = f"\n📺 **Assista ao vivo:** {live_url}" if live_url else ""
+        await interaction.followup.send(
+            f"⏰ **Em 60 minutos!**\n⚽ {_jogo(m)}{live_line}"
+        )
+
+    @app_commands.command(name="teste-aviso-30min", description="[TESTE] Aviso de 30 minutos para a partida mais próxima")
+    @app_commands.default_permissions(administrator=True)
+    async def teste_aviso_30min(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        m = await _partida_proxima()
+        if not m:
+            await interaction.followup.send("❌ Nenhuma partida encontrada.", ephemeral=True)
+            return
+        live_url = await asyncio.to_thread(youtube.get_cazetv_live)
+        live_line = f"\n📺 **Assista ao vivo:** {live_url}" if live_url else ""
+        await interaction.followup.send(
+            f"⏰ **Em 30 minutos!**\n⚽ {_jogo(m)}{live_line}"
+        )
+
+    @app_commands.command(name="teste-inicio", description="[TESTE] Notificação de início de jogo")
+    @app_commands.default_permissions(administrator=True)
+    async def teste_inicio(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        m = await _partida_proxima()
+        if not m:
+            await interaction.followup.send("❌ Nenhuma partida encontrada.", ephemeral=True)
+            return
+        await interaction.followup.send(f"🔔 **Começou!**\n⚽ {_jogo(m)}")
+
+    @app_commands.command(name="teste-fim-1t", description="[TESTE] Notificação de fim do 1º tempo")
+    @app_commands.default_permissions(administrator=True)
+    async def teste_fim_1t(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        m = await _partida_proxima()
+        if not m:
+            await interaction.followup.send("❌ Nenhuma partida encontrada.", ephemeral=True)
+            return
+        h = m["home_score"] or 0
+        a = m["away_score"] or 0
+        await interaction.followup.send(
+            f"🔔 **Fim do 1º tempo**\n**{m['home_pt']} {h}-{a} {m['away_pt']}**"
+        )
+
+    @app_commands.command(name="teste-inicio-2t", description="[TESTE] Notificação de início do 2º tempo")
+    @app_commands.default_permissions(administrator=True)
+    async def teste_inicio_2t(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        m = await _partida_proxima()
+        if not m:
+            await interaction.followup.send("❌ Nenhuma partida encontrada.", ephemeral=True)
+            return
+        await interaction.followup.send(f"🔔 **2º tempo começou!**\n⚽ {_jogo(m)}")
+
+    @app_commands.command(name="teste-fim-jogo", description="[TESTE] Notificação de fim de jogo")
+    @app_commands.default_permissions(administrator=True)
+    async def teste_fim_jogo(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        m = await _partida_proxima()
+        if not m:
+            await interaction.followup.send("❌ Nenhuma partida encontrada.", ephemeral=True)
+            return
+        h = m["home_score"] or 0
+        a = m["away_score"] or 0
+        await interaction.followup.send(
+            f"🏁 **Fim de jogo!**\n**{m['home_pt']} {h}-{a} {m['away_pt']}**"
+        )
+
+    @app_commands.command(name="teste-suspenso", description="[TESTE] Notificação de jogo suspenso")
+    @app_commands.default_permissions(administrator=True)
+    async def teste_suspenso(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        m = await _partida_proxima()
+        if not m:
+            await interaction.followup.send("❌ Nenhuma partida encontrada.", ephemeral=True)
+            return
+        hf = copa_svc.flag(m["home_en"])
+        af = copa_svc.flag(m["away_en"])
+        await interaction.followup.send(
+            f"⚠️ **Jogo suspenso temporariamente!**\n⚽ **{hf} {m['home_pt']} x {m['away_pt']} {af}**"
+        )
+
+    @app_commands.command(name="teste-retomado", description="[TESTE] Notificação de jogo retomado")
+    @app_commands.default_permissions(administrator=True)
+    async def teste_retomado(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        m = await _partida_proxima()
+        if not m:
+            await interaction.followup.send("❌ Nenhuma partida encontrada.", ephemeral=True)
+            return
+        hf = copa_svc.flag(m["home_en"])
+        af = copa_svc.flag(m["away_en"])
+        h = m["home_score"] or 0
+        a = m["away_score"] or 0
+        await interaction.followup.send(
+            f"▶️ **Jogo retomado!**\n⚽ **{hf} {m['home_pt']} {h}-{a} {m['away_pt']} {af}**"
         )
 
 

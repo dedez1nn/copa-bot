@@ -29,7 +29,8 @@ _POS_FIFA = {0: "GK", 1: "DEF", 2: "MEI", 3: "ATA"}
 def _state(key: str) -> dict:
     if key not in _watch:
         _watch[key] = {
-            "announced_30": False,
+            "announced_60": False,
+        "announced_30": False,
             "kicked_off": False,
             "primed": False,
             "ht_sent": False,
@@ -321,6 +322,21 @@ async def run_monitor_tick(bot: discord.Client, channels: list[tuple[int, int]])
                 content=f"▶️ **Jogo retomado!**\n⚽ **{hf} {m['home_pt']} {h}-{a} {m['away_pt']} {af}**",
             )
         st["last_status"] = status
+
+        # ── Aviso 1 hora antes ──
+        if not st["announced_60"] and status == "notstarted" and 1800 < (ts - now) <= 3600:
+            st["announced_60"] = True
+            mins = max(1, int((ts - now) / 60))
+            live_url = await asyncio.to_thread(youtube.get_cazetv_live)
+            live_line = f"\n📺 **Assista ao vivo:** {live_url}" if live_url else ""
+            await _send_all(
+                bot, channels,
+                content=(
+                    f"⏰ **Em {mins} minutos!**\n"
+                    f"⚽ **{hf} {m['home_pt']} x {m['away_pt']} {af}**"
+                    f"{live_line}"
+                ),
+            )
 
         # ── Aviso 30 min antes ──
         if not st["announced_30"] and status == "notstarted" and 0 < (ts - now) <= 1800:
