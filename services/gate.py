@@ -30,6 +30,9 @@ async def allowed(interaction: discord.Interaction) -> bool:
     guild_id = interaction.guild_id
     if guild_id is None:
         return True
+    member = interaction.user
+    if isinstance(member, discord.Member) and member.guild_permissions.administrator:
+        return True
     ch = _command_channels.get(guild_id)
     if ch is None or interaction.channel_id == ch:
         return True
