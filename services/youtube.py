@@ -11,109 +11,89 @@ logger = logging.getLogger(__name__)
 
 _CAZETV_HANDLE = "CazeTV"
 _YT_CHANNELS = "https://www.googleapis.com/youtube/v3/channels"
-_YT_SEARCH = "https://www.googleapis.com/youtube/v3/search"
+_YT_PLAYLIST = "https://www.googleapis.com/youtube/v3/playlistItems"
 _YT_VIDEOS = "https://www.googleapis.com/youtube/v3/videos"
 _BRT = timezone(timedelta(hours=-3))
 
-# Cache do channel ID resolvido em runtime
 _resolved_channel_id: str | None = None
+_uploads_playlist_id: str | None = None
 
 
 def _get(url: str) -> dict:
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=5) as r:
+    with urllib.request.urlopen(req, timeout=8) as r:
         data = json.loads(r.read())
     return data
 
 
-def _resolve_channel_id(api_key: str) -> str | None:
-    """Resolve @CazeTV para o channel ID via channels API."""
-    global _resolved_channel_id
-    if _resolved_channel_id:
-        return _resolved_channel_id
+def _resolve_channel(api_key: str) -> tuple[str, str] | tuple[None, None]:
+    """Retorna (channel_id, uploads_playlist_id) resolvendo via @CazeTV handle."""
+    global _resolved_channel_id, _uploads_playlist_id
+    if _resolved_channel_id and _uploads_playlist_id:
+        return _resolved_channel_id, _uploads_playlist_id
+
     params = urllib.parse.urlencode({
-        "part": "id",
+        "part": "id,contentDetails",
         "forHandle": _CAZETV_HANDLE,
         "key": api_key,
     })
     data = _get(f"{_YT_CHANNELS}?{params}")
     if "error" in data:
-        logger.error("[YouTube] erro ao resolver channel ID: %s", data["error"])
-        return None
+        logger.error("[YouTube] erro ao resolver canal: %s", data["error"])
+        return None, None
     items = data.get("items", [])
     if not items:
         logger.warning("[YouTube] handle @%s não encontrado", _CAZETV_HANDLE)
-        return None
+        return None, None
+
     _resolved_channel_id = items[0]["id"]
-    logger.info("[YouTube] channel ID resolvido: @%s → %s", _CAZETV_HANDLE, _resolved_channel_id)
-    return _resolved_channel_id
+    _uploads_playlist_id = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
+    logger.info("[YouTube] canal resolvido: @%s → %s (uploads: %s)",
+                _CAZETV_HANDLE, _resolved_channel_id, _uploads_playlist_id)
+    return _resolved_channel_id, _uploads_playlist_id
 
 
-def _search(api_key: str, channel_id: str, event_type: str, max_results: int = 1) -> list:
+def _get_recent_video_ids(api_key: str, playlist_id: str, max_results: int = 10) -> list[str]:
+    """Retorna IDs dos vídeos mais recentes do canal via playlistItems."""
     params = urllib.parse.urlencode({
-        "part": "snippet",
-        "channelId": channel_id,
-        "type": "video",
-        "eventType": event_type,
+        "part": "contentDetails",
+        "playlistId": playlist_id,
         "maxResults": max_results,
         "key": api_key,
     })
-    data = _get(f"{_YT_SEARCH}?{params}")
-    items = data.get("items", [])
-    logger.info("[YouTube] search eventType=%s → %d resultado(s)", event_type, len(items))
-    for it in items:
-        title = it.get("snippet", {}).get("title", "?")
-        vid = it.get("id", {}).get("videoId", "?")
-        logger.info("[YouTube]   • %s | id=%s", title, vid)
+    data = _get(f"{_YT_PLAYLIST}?{params}")
     if "error" in data:
-        logger.error("[YouTube] erro na API: %s", data["error"])
-    return items
+        logger.error("[YouTube] erro ao buscar playlist: %s", data["error"])
+        return []
+    ids = [i["contentDetails"]["videoId"] for i in data.get("items", [])]
+    logger.info("[YouTube] playlistItems → %d vídeo(s)", len(ids))
+    return ids
 
 
-def _search_recent(api_key: str, channel_id: str, max_results: int = 10) -> list:
-    """Busca vídeos recentes do canal (sem filtro eventType)."""
+def _get_live_details(api_key: str, video_ids: list[str]) -> list[dict]:
+    """Retorna lista de {id, title, actualStartTime, actualEndTime, scheduledStartTime}."""
     params = urllib.parse.urlencode({
-        "part": "snippet",
-        "channelId": channel_id,
-        "type": "video",
-        "order": "date",
-        "maxResults": max_results,
-        "key": api_key,
-    })
-    data = _get(f"{_YT_SEARCH}?{params}")
-    items = data.get("items", [])
-    logger.info("[YouTube] search recent → %d resultado(s)", len(items))
-    for it in items:
-        title = it.get("snippet", {}).get("title", "?")
-        vid = it.get("id", {}).get("videoId", "?")
-        logger.info("[YouTube]   • %s | id=%s", title, vid)
-    if "error" in data:
-        logger.error("[YouTube] erro na API (recent): %s", data["error"])
-    return items
-
-
-def _get_live_details(api_key: str, video_ids: list[str]) -> dict[str, dict]:
-    """Retorna {video_id: liveStreamingDetails} para os IDs."""
-    params = urllib.parse.urlencode({
-        "part": "liveStreamingDetails,snippet",
+        "part": "snippet,liveStreamingDetails",
         "id": ",".join(video_ids),
         "key": api_key,
     })
     items = _get(f"{_YT_VIDEOS}?{params}").get("items", [])
-    result = {}
+    result = []
     for item in items:
-        vid = item["id"]
         details = item.get("liveStreamingDetails", {})
         title = item.get("snippet", {}).get("title", "?")
-        actual_start = details.get("actualStartTime")
-        actual_end = details.get("actualEndTime")
-        scheduled = details.get("scheduledStartTime")
+        entry = {
+            "id": item["id"],
+            "title": title,
+            "actualStart": details.get("actualStartTime"),
+            "actualEnd": details.get("actualEndTime"),
+            "scheduled": details.get("scheduledStartTime"),
+        }
         logger.info(
-            "[YouTube] liveDetails %s | title=%s | actualStart=%s | actualEnd=%s | scheduled=%s",
-            vid, title, actual_start, actual_end, scheduled,
+            "[YouTube] vídeo %s | %s | actualStart=%s | actualEnd=%s | scheduled=%s",
+            entry["id"], title, entry["actualStart"], entry["actualEnd"], entry["scheduled"],
         )
-        if details:
-            result[vid] = details
+        result.append(entry)
     return result
 
 
@@ -124,11 +104,8 @@ def _fmt_horario(dt: datetime) -> str:
 def get_cazetv_live(game_ts: int | None = None) -> str | None:
     """Retorna URL da live ativa ou agendada da CazeTV.
 
-    Fluxo:
-    1. Resolve channel ID via @CazeTV handle
-    2. Busca com eventType=live → retorna se encontrado
-    3. Busca com eventType=upcoming → retorna mais próxima do jogo
-    4. Fallback: busca vídeos recentes e checa liveStreamingDetails
+    Usa playlistItems (uploads) em vez de search para evitar restrições de IP.
+    Prioridade: live ativa agora > stream agendada mais próxima do jogo.
     """
     api_key = os.environ.get("YOUTUBE_API_KEY")
     if not api_key:
@@ -138,89 +115,43 @@ def get_cazetv_live(game_ts: int | None = None) -> str | None:
     logger.info("[YouTube] iniciando busca (game_ts=%s)", game_ts)
 
     try:
-        channel_id = _resolve_channel_id(api_key)
-        if not channel_id:
+        _cid, playlist_id = _resolve_channel(api_key)
+        if not playlist_id:
             return None
 
-        # 1. Live ativa agora
-        items = _search(api_key, channel_id, "live")
-        if items:
-            video_id = items[0]["id"]["videoId"]
-            url = f"https://www.youtube.com/watch?v={video_id}"
-            logger.info("[YouTube] live ativa encontrada: %s", url)
-            return url
-
-        logger.info("[YouTube] nenhuma live ativa — buscando agendadas")
-
-        # 2. Streams agendadas
-        items = _search(api_key, channel_id, "upcoming", max_results=5)
-        if items:
-            video_ids = [i["id"]["videoId"] for i in items]
-            details = _get_live_details(api_key, video_ids)
-            starts: dict[str, datetime] = {}
-            for vid, d in details.items():
-                ts = d.get("scheduledStartTime")
-                if ts:
-                    starts[vid] = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-
-            if starts and game_ts:
-                game_dt = datetime.fromtimestamp(game_ts, tz=timezone.utc)
-                best_id = min(starts, key=lambda v: abs((starts[v] - game_dt).total_seconds()))
-                horario = _fmt_horario(starts[best_id])
-                logger.info("[YouTube] stream agendada mais próxima: %s (%s)", best_id, horario)
-            elif starts:
-                best_id = min(starts, key=lambda v: starts[v])
-                horario = _fmt_horario(starts[best_id])
-                logger.info("[YouTube] próxima stream agendada: %s (%s)", best_id, horario)
-            else:
-                best_id = video_ids[0]
-                horario = None
-                logger.info("[YouTube] sem scheduledStartTime — usando primeiro resultado: %s", best_id)
-
-            url = f"https://www.youtube.com/watch?v={best_id}"
-            result = f"{url} (prevista às {horario})" if horario else url
-            logger.info("[YouTube] retornando (upcoming): %s", result)
-            return result
-
-        # 3. Fallback: vídeos recentes com liveStreamingDetails
-        logger.info("[YouTube] nenhuma upcoming — verificando vídeos recentes")
-        recent = _search_recent(api_key, channel_id, max_results=10)
-        if not recent:
-            logger.info("[YouTube] nenhum vídeo recente encontrado")
+        video_ids = _get_recent_video_ids(api_key, playlist_id, max_results=15)
+        if not video_ids:
+            logger.info("[YouTube] nenhum vídeo encontrado no canal")
             return None
 
-        video_ids = [i["id"]["videoId"] for i in recent]
-        details = _get_live_details(api_key, video_ids)
+        videos = _get_live_details(api_key, video_ids)
 
-        now_utc = datetime.now(timezone.utc)
-        game_dt = datetime.fromtimestamp(game_ts, tz=timezone.utc) if game_ts else now_utc
+        game_dt = datetime.fromtimestamp(game_ts, tz=timezone.utc) if game_ts else datetime.now(timezone.utc)
 
-        # Prioridade: ao vivo agora (sem actualEndTime) > agendada mais próxima
-        live_now = [
-            vid for vid, d in details.items()
-            if d.get("actualStartTime") and not d.get("actualEndTime")
-        ]
+        # 1. Live ativa agora (actualStartTime presente, sem actualEndTime)
+        live_now = [v for v in videos if v["actualStart"] and not v["actualEnd"]]
         if live_now:
-            best_id = live_now[0]
-            url = f"https://www.youtube.com/watch?v={best_id}"
-            logger.info("[YouTube] live ativa (fallback recent): %s", url)
+            best = live_now[0]
+            url = f"https://www.youtube.com/watch?v={best['id']}"
+            logger.info("[YouTube] live ativa: %s | %s", best["id"], best["title"])
             return url
 
-        scheduled_vids: dict[str, datetime] = {}
-        for vid, d in details.items():
-            ts = d.get("scheduledStartTime")
-            if ts and not d.get("actualEndTime"):
-                scheduled_vids[vid] = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        # 2. Stream agendada (scheduledStartTime, sem actualStartTime ou actualEndTime)
+        scheduled = [
+            v for v in videos
+            if v["scheduled"] and not v["actualStart"] and not v["actualEnd"]
+        ]
+        if scheduled:
+            def _sched_dt(v):
+                return datetime.fromisoformat(v["scheduled"].replace("Z", "+00:00"))
 
-        if scheduled_vids:
-            best_id = min(scheduled_vids, key=lambda v: abs((scheduled_vids[v] - game_dt).total_seconds()))
-            horario = _fmt_horario(scheduled_vids[best_id])
-            url = f"https://www.youtube.com/watch?v={best_id}"
-            result = f"{url} (prevista às {horario})"
-            logger.info("[YouTube] retornando (fallback agendada): %s", result)
-            return result
+            best = min(scheduled, key=lambda v: abs((_sched_dt(v) - game_dt).total_seconds()))
+            horario = _fmt_horario(_sched_dt(best))
+            url = f"https://www.youtube.com/watch?v={best['id']}"
+            logger.info("[YouTube] stream agendada mais próxima: %s (%s) | %s", best["id"], horario, best["title"])
+            return f"{url} (prevista às {horario})"
 
-        logger.info("[YouTube] nenhuma stream encontrada")
+        logger.info("[YouTube] nenhuma live ativa ou agendada encontrada")
         return None
 
     except Exception as e:
