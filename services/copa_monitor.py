@@ -64,6 +64,7 @@ def _state(key: str) -> dict:
             "home_team_id": None,
             "away_team_id": None,
             "pmap": {},
+            "kickoff_notified": False,
         }
     return _watch[key]
 
@@ -527,9 +528,9 @@ async def _check_fifa_timeline(bot, channels, m: dict, st: dict) -> None:
         team_name, team_flag = _team_from_event(m, st, team_id)
         pmap = st.get("pmap") or {}
 
-        if etype == 7:  # Horário de início — backup de kickoff
-            if not st["kicked_off"]:
-                st["kicked_off"] = True
+        if etype == 7:  # Horário de início
+            if not st["kickoff_notified"]:
+                st["kickoff_notified"] = True
                 await _send_all(bot, channels, embed=build_kickoff_embed(m))
 
         elif etype == 6:  # Pênalti marcado (árbitro)
@@ -647,9 +648,6 @@ async def run_monitor_tick(bot: discord.Client, channels: list[tuple[int, int]])
 
         # ── Priming ──
         if not st["primed"] and status == "inprogress":
-            # Bot estava rodando antes do jogo começar → envia kickoff
-            if not _first_tick and not st["kicked_off"]:
-                await _send_all(bot, channels, embed=build_kickoff_embed(m))
             st["kicked_off"] = True
             data = await asyncio.to_thread(_load_fifa_live, m["fifa_id"])
             if data:
@@ -669,11 +667,19 @@ async def run_monitor_tick(bot: discord.Client, channels: list[tuple[int, int]])
                     st["ht_sent"] = True
                 if period is not None and period >= 4:
                     st["2ht_sent"] = True
-                # Prime eventos do timeline para não re-notificar eventos passados
                 tl_events = await asyncio.to_thread(_load_fifa_timeline, m)
                 for ev in (tl_events or []):
                     eid = ev.get("EventId")
-                    if eid:
+                    etype_ev = ev.get("Type")
+                    if not eid:
+                        continue
+                    if etype_ev == 7:
+                        # Bot iniciou com jogo em andamento → suprime kickoff
+                        # Bot estava rodando → não marca, timeline vai disparar
+                        if _first_tick:
+                            st["seen_timeline_events"].add(eid)
+                            st["kickoff_notified"] = True
+                    else:
                         st["seen_timeline_events"].add(eid)
                 st["primed"] = True
             continue
