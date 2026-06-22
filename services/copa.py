@@ -1,12 +1,16 @@
 """Copa do Mundo 2026 — camada de dados (fonte: FIFA API)."""
 
 import json
+import logging
 import re
 import time
 import unicodedata
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 CACHE_DIR = Path.home() / ".cache" / "copa2026-discord"
 CACHE_TTL = 300
@@ -94,8 +98,17 @@ def _get_fifa(url: str, timeout: int = 8) -> dict | None:
         )
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read())
-    except Exception:
-        return None
+    except urllib.error.HTTPError as e:
+        logger.warning("[fifa] HTTP %s ao acessar %s", e.code, url)
+    except urllib.error.URLError as e:
+        logger.warning("[fifa] erro de rede ao acessar %s: %s", url, e.reason)
+    except TimeoutError:
+        logger.warning("[fifa] timeout ao acessar %s", url)
+    except json.JSONDecodeError as e:
+        logger.warning("[fifa] JSON inválido em %s: %s", url, e)
+    except Exception as e:
+        logger.warning("[fifa] erro inesperado em %s: %s", url, e)
+    return None
 
 
 def _cached(key: str, url: str, ttl: int = CACHE_TTL) -> dict | None:
@@ -127,11 +140,19 @@ def _load_fifa_timeline(m: dict) -> list[dict] | None:
     stage_id = m.get("stage_id")
     match_id = m.get("fifa_id")
     if not stage_id or not match_id:
+        logger.warning("[fifa] timeline sem stage_id/fifa_id para %s x %s (stage=%s match=%s)",
+                       m.get("home_pt"), m.get("away_pt"), stage_id, match_id)
         return None
     url = (f"{FIFA}/timelines/{FIFA_COMPETITION}/{FIFA_SEASON}"
            f"/{stage_id}/{match_id}?language=pt")
     data = _get_fifa(url)
-    return (data or {}).get("Event") or None
+    if data is None:
+        return None
+    events = data.get("Event")
+    if events is None:
+        logger.warning("[fifa] timeline sem campo 'Event' para %s x %s — chaves: %s",
+                       m.get("home_pt"), m.get("away_pt"), list(data.keys()))
+    return events or None
 
 
 def _player_map_fifa(home: dict, away: dict) -> dict[str, str]:
