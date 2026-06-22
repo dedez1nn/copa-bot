@@ -471,12 +471,14 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
             prev_h, prev_a = info.get("score_at_announce", (None, None))
             if (prev_h, prev_a) == (h_score, a_score):
                 continue
+            team_en_var = m["home_en"] if info["team_pt"] == home_pt else m["away_en"]
             await _send_all(
                 bot, channels,
-                content=(
+                embed=_event_embed(
                     f"🚫 **Gol anulado pelo VAR!** {info['player']}{info['extra']} "
                     f"({info['team_pt']}) — {info['minute']}'\n"
-                    f"**{home_pt} {h_score}-{a_score} {away_pt}**"
+                    f"**{home_pt} {h_score}-{a_score} {away_pt}**",
+                    team_en_var,
                 ),
             )
         elif now_var - info["ts"] >= VAR_WINDOW_SECS:
@@ -486,11 +488,13 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
     for ckey, info in list(st["pending_cards"].items()):
         if ckey not in current_red_keys:
             del st["pending_cards"][ckey]
+            team_en_var = m["home_en"] if info["team_pt"] == home_pt else m["away_en"]
             await _send_all(
                 bot, channels,
-                content=(
+                embed=_event_embed(
                     f"🟨 **Vermelho revertido pelo VAR!** {info['player']} "
-                    f"({info['team_pt']}) — {info['minute']}'"
+                    f"({info['team_pt']}) — {info['minute']}'",
+                    team_en_var,
                 ),
             )
         elif now_var - info["ts"] >= VAR_WINDOW_SECS:
@@ -757,7 +761,10 @@ async def _tick_match(bot, channels, m: dict, now: float) -> None:
         st["suspended"] = True
         await _send_all(
             bot, channels,
-            content=f"⚠️ **Jogo suspenso temporariamente!**\n⚽ **{hf} {m['home_pt']} x {m['away_pt']} {af}**",
+            embed=discord.Embed(
+                description=f"⚠️ **Jogo suspenso temporariamente!**\n⚽ **{hf} {m['home_pt']} x {m['away_pt']} {af}**",
+                color=0xFF6600,
+            ),
         )
     elif st.get("suspended") and status == "inprogress":
         st["suspended"] = False
@@ -765,7 +772,10 @@ async def _tick_match(bot, channels, m: dict, now: float) -> None:
         a = m["away_score"] if m["away_score"] is not None else 0
         await _send_all(
             bot, channels,
-            content=f"▶️ **Jogo retomado!**\n⚽ **{hf} {m['home_pt']} {h}-{a} {m['away_pt']} {af}**",
+            embed=discord.Embed(
+                description=f"▶️ **Jogo retomado!**\n⚽ **{hf} {m['home_pt']} {h}-{a} {m['away_pt']} {af}**",
+                color=0x2ECC71,
+            ),
         )
     st["last_status"] = status
 
@@ -867,5 +877,9 @@ async def _tick_match(bot, channels, m: dict, now: float) -> None:
         else:
             await _send_all(
                 bot, channels,
-                content=f"🏁 **Fim de jogo!**\n**{m['home_pt']} {h}-{a} {m['away_pt']}**",
+                embed=discord.Embed(
+                    title="🏁 Fim de Jogo",
+                    description=f"**{hf} {m['home_pt']}  {h} — {a}  {m['away_pt']} {af}**",
+                    color=0x2C3E50,
+                ),
             )
