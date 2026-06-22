@@ -528,7 +528,35 @@ async def _check_fifa_timeline(bot, channels, m: dict, st: dict) -> None:
         team_name, team_flag = _team_from_event(m, st, team_id)
         pmap = st.get("pmap") or {}
 
-        if etype == 7:  # Horário de início
+        if etype == 1:  # Assistência
+            sub_id = str(event.get("IdSubPlayer") or "")
+            assister = pmap.get(sub_id, "") if sub_id else ""
+            if assister:
+                msg = f"🅰️ **Assistência de {assister}!** ({team_flag} {team_name}) — {minute}'"
+            else:
+                msg = f"🅰️ **Assistência!** {team_flag} {team_name} — {minute}'"
+            await _send_all(bot, channels, content=msg)
+
+        elif etype == 2:  # Cartão amarelo
+            player = pmap.get(player_id, "") if player_id else ""
+            if player:
+                msg = f"🟨 **Cartão amarelo!** {player} ({team_flag} {team_name}) — {minute}'"
+            elif team_name != "?":
+                msg = f"🟨 **Cartão amarelo!** {team_flag} {team_name} — {minute}'"
+            else:
+                msg = f"🟨 **Cartão amarelo!** — {minute}'"
+            await _send_all(bot, channels, content=msg)
+
+        elif etype == 5:  # Substituição
+            sub_id = str(event.get("IdSubPlayer") or "")
+            p_in = pmap.get(player_id, "?") if player_id else "?"
+            p_out = pmap.get(sub_id, "?") if sub_id else "?"
+            await _send_all(
+                bot, channels,
+                content=f"↕️ **Substituição!** {p_in} ← {p_out} ({team_flag} {team_name}) — {minute}'",
+            )
+
+        elif etype == 7:  # Horário de início
             if not st["kickoff_notified"]:
                 st["kickoff_notified"] = True
                 await _send_all(bot, channels, embed=build_kickoff_embed(m))
