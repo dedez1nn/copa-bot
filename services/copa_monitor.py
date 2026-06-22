@@ -683,7 +683,11 @@ async def run_monitor_tick(bot: discord.Client, channels: list[tuple[int, int]])
         return
 
     now = time.time()
-    logger.info("[tick] rodada com %d jogos | channels=%d | first_tick=%s", len(matches), len(channels), _first_tick)
+    from collections import Counter
+    status_count = Counter(m["status"] for m in matches)
+    logger.info("[tick] rodada com %d jogos | channels=%d | first_tick=%s | %s",
+                len(matches), len(channels), _first_tick,
+                " ".join(f"{s}={n}" for s, n in status_count.items()))
 
     for m in matches:
         if not m.get("fifa_id"):

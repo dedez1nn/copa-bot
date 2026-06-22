@@ -127,7 +127,7 @@ def _cached(key: str, url: str, ttl: int = CACHE_TTL) -> dict | None:
 def _load_fifa_matches() -> list[dict]:
     url = (f"{FIFA}/calendar/matches"
            f"?idCompetition={FIFA_COMPETITION}&idSeason={FIFA_SEASON}&count=200&language=pt")
-    data = _cached("fifa_matches", url, ttl=3600)
+    data = _cached("fifa_matches", url, ttl=60)
     return (data or {}).get("Results", [])
 
 
