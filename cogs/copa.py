@@ -41,22 +41,25 @@ def _embed_jogos_rodada(jogos: list[dict]) -> discord.Embed:
         embed.description = "Nenhum jogo encontrado para a rodada atual."
         return embed
 
-    linhas = []
+    # Agrupa por dia para evitar o limite de 4096 chars na description
+    por_dia: dict[str, list[str]] = {}
     for m in jogos:
         status = m["status"]
-        if status == "inprogress":
-            icon = "🔴"
-        elif status == "finished":
-            icon = "✅"
-        else:
-            icon = "🗓️"
+        icon = "🔴" if status == "inprogress" else ("✅" if status == "finished" else "🗓️")
         hf = _flag(m["home_en"])
         af = _flag(m["away_en"])
-        linhas.append(
-            f"{icon} **{hf} {m['home_pt']}  {_score_str(m)}  {m['away_pt']} {af}**"
-            f"  —  {_ts_str(m['date_ts'])} BRT"
-        )
-    embed.description = "\n".join(linhas)
+        hora = datetime.fromtimestamp(m["date_ts"], tz=BRT).strftime("%H:%M")
+        dia  = datetime.fromtimestamp(m["date_ts"], tz=BRT).strftime("%d/%m")
+        linha = f"{icon} **{hf} {m['home_pt']}  {_score_str(m)}  {m['away_pt']} {af}** — {hora} BRT"
+        por_dia.setdefault(dia, []).append(linha)
+
+    for dia, linhas in por_dia.items():
+        valor = "\n".join(linhas)
+        # field value limite: 1024 chars
+        if len(valor) > 1024:
+            valor = valor[:1020] + "\n…"
+        embed.add_field(name=f"📅 {dia}", value=valor, inline=False)
+
     embed.set_footer(text="Use /copa-time <seleção> para detalhes de um time")
     return embed
 
