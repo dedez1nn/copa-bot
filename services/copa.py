@@ -65,6 +65,58 @@ PT_TO_EN: dict[str, str] = {
     "panama": "panama", "japao": "japan",
 }
 
+TEAM_COLORS: dict[str, int] = {
+    "brazil":               0x009C3B,  # verde
+    "argentina":            0x75AADB,  # azul celeste
+    "france":               0x002395,  # azul
+    "england":              0xCF111B,  # vermelho
+    "germany":              0x000000,  # preto
+    "spain":                0xAA151B,  # vermelho
+    "portugal":             0x006600,  # verde
+    "netherlands":          0xFF6600,  # laranja
+    "usa":                  0x002868,  # azul
+    "mexico":               0x006847,  # verde
+    "canada":               0xFF0000,  # vermelho
+    "japan":                0x0A2240,  # azul-marinho
+    "south korea":          0xC60C30,  # vermelho
+    "australia":            0xFFD700,  # dourado
+    "morocco":              0xC1272D,  # vermelho
+    "senegal":              0x00853F,  # verde
+    "ghana":                0x006B3F,  # verde
+    "egypt":                0xCE1126,  # vermelho
+    "south africa":         0x007A4D,  # verde
+    "colombia":             0xFCD116,  # amarelo
+    "uruguay":              0x5EB6E4,  # azul celeste
+    "ecuador":              0xFFD100,  # amarelo
+    "paraguay":             0xD52B1E,  # vermelho
+    "panama":               0xD21034,  # vermelho
+    "croatia":              0xFF0000,  # vermelho
+    "switzerland":          0xFF0000,  # vermelho
+    "belgium":              0xEF3340,  # vermelho
+    "denmark":              0xC60C30,  # vermelho
+    "sweden":               0x006AA7,  # azul
+    "norway":               0xEF2B2D,  # vermelho
+    "austria":              0xED2939,  # vermelho
+    "czechia":              0xD7141A,  # vermelho
+    "türkiye":              0xE30A17,  # vermelho
+    "saudi arabia":         0x006C35,  # verde
+    "iran":                 0x239F40,  # verde
+    "iraq":                 0x007A3D,  # verde
+    "qatar":                0x8D1B3D,  # bordô
+    "jordan":               0x007A3D,  # verde
+    "uzbekistan":           0x1EB53A,  # verde
+    "new zealand":          0x000000,  # preto
+    "haiti":                0x00209F,  # azul
+    "scotland":             0x003082,  # azul-marinho
+    "tunisia":              0xE70013,  # vermelho
+    "algeria":              0x006233,  # verde
+    "côte d'ivoire":        0xF77F00,  # laranja
+    "dr congo":             0x007FFF,  # azul
+    "cabo verde":           0x003893,  # azul
+    "curaçao":              0x002B7F,  # azul
+    "bosnia & herzegovina": 0x002395,  # azul
+}
+
 FLAGS: dict[str, str] = {
     "brazil": "🇧🇷", "argentina": "🇦🇷", "france": "🇫🇷", "england": "🇬🇧",
     "germany": "🇩🇪", "spain": "🇪🇸", "portugal": "🇵🇹", "netherlands": "🇳🇱",
@@ -247,6 +299,10 @@ def _match_team(m: dict, en: str) -> bool:
 
 def flag(team_en: str) -> str:
     return FLAGS.get(team_en.lower(), "🏳️")
+
+
+def team_color(team_en: str) -> int:
+    return TEAM_COLORS.get(team_en.lower(), 0x3B82F6)
 
 
 def is_brazil_match(m: dict) -> bool:

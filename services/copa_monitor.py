@@ -10,7 +10,7 @@ import discord
 from services.copa import (
     BRT, EN_TO_PT, FLAGS,
     _load_fifa_live, _load_fifa_timeline, _player_map_fifa,
-    get_jogos_rodada, is_brazil_match, flag,
+    get_jogos_rodada, is_brazil_match, flag, team_color,
 )
 from services import youtube
 
@@ -354,6 +354,11 @@ async def _send_all(bot: discord.Client, channels: list[tuple[int, int]], **kwar
             logger.exception("Falha ao enviar para canal %s (guild %s)", channel_id, guild_id)
 
 
+def _event_embed(msg: str, team_en: str) -> discord.Embed:
+    """Embed mínimo com cor lateral do time para notificações de evento."""
+    return discord.Embed(description=msg, color=team_color(team_en))
+
+
 # ── Verificação ao vivo via FIFA ──────────────────────────────────────────────
 
 async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
@@ -428,11 +433,13 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
             "minute": minute, "extra": extra,
             "score_at_announce": (h_score, a_score),
         }
+        team_en_scorer = m["home_en"] if team_pt == home_pt else m["away_en"]
         await _send_all(
             bot, channels,
-            content=(
+            embed=_event_embed(
                 f"⚽ **GOL! {player}{extra}** ({team_pt}) — {minute}'\n"
-                f"**{home_pt} {h_score}-{a_score} {away_pt}**"
+                f"**{home_pt} {h_score}-{a_score} {away_pt}**",
+                team_en_scorer,
             ),
         )
 
@@ -450,7 +457,9 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
         st["pending_cards"][ckey] = {
             "ts": time.time(), "player": player, "team_pt": team_pt, "minute": minute,
         }
-        await _send_all(bot, channels, content=f"🟥 **{player}** ({team_pt}) — {minute}'")
+        team_en_card = m["home_en"] if team_pt == home_pt else m["away_en"]
+        await _send_all(bot, channels,
+                        embed=_event_embed(f"🟥 **{player}** ({team_pt}) — {minute}'", team_en_card))
 
     # -- VAR: gol removido --
     now_var = time.time()
@@ -512,13 +521,13 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
 
 # ── Verificação de timeline ───────────────────────────────────────────────────
 
-def _team_from_event(m: dict, st: dict, team_id) -> tuple[str, str]:
-    """Retorna (nome_pt, flag) do time com base no IdTeam do evento."""
+def _team_from_event(m: dict, st: dict, team_id) -> tuple[str, str, str]:
+    """Retorna (nome_pt, flag_emoji, team_en) do time com base no IdTeam do evento."""
     if team_id and team_id == st.get("home_team_id"):
-        return m["home_pt"], flag(m["home_en"])
+        return m["home_pt"], flag(m["home_en"]), m["home_en"]
     if team_id and team_id == st.get("away_team_id"):
-        return m["away_pt"], flag(m["away_en"])
-    return "?", ""
+        return m["away_pt"], flag(m["away_en"]), m["away_en"]
+    return "?", "", ""
 
 
 _TL_TYPE_NAMES: dict[int, str] = {
@@ -557,8 +566,11 @@ async def _check_fifa_timeline(bot, channels, m: dict, st: dict) -> None:
         minute = event.get("MatchMinute", "?")
         team_id = event.get("IdTeam")
         player_id = str(event.get("IdPlayer") or "")
-        team_name, team_flag = _team_from_event(m, st, team_id)
+        team_name, team_flag, team_en = _team_from_event(m, st, team_id)
         pmap = st.get("pmap") or {}
+
+        def _send_event(msg: str) -> None:
+            return _send_all(bot, channels, embed=_event_embed(msg, team_en))
 
         if etype == 1:  # Assistência
             sub_id = str(event.get("IdSubPlayer") or "")
@@ -567,7 +579,7 @@ async def _check_fifa_timeline(bot, channels, m: dict, st: dict) -> None:
                 msg = f"🅰️ **Assistência de {assister}!** ({team_flag} {team_name}) — {minute}'"
             else:
                 msg = f"🅰️ **Assistência!** {team_flag} {team_name} — {minute}'"
-            await _send_all(bot, channels, content=msg)
+            await _send_event(msg)
 
         elif etype == 2:  # Cartão amarelo
             player = pmap.get(player_id, "") if player_id else ""
@@ -577,16 +589,13 @@ async def _check_fifa_timeline(bot, channels, m: dict, st: dict) -> None:
                 msg = f"🟨 **Cartão amarelo!** {team_flag} {team_name} — {minute}'"
             else:
                 msg = f"🟨 **Cartão amarelo!** — {minute}'"
-            await _send_all(bot, channels, content=msg)
+            await _send_event(msg)
 
         elif etype == 5:  # Substituição
             sub_id = str(event.get("IdSubPlayer") or "")
             p_in = pmap.get(player_id, "?") if player_id else "?"
             p_out = pmap.get(sub_id, "?") if sub_id else "?"
-            await _send_all(
-                bot, channels,
-                content=f"↕️ **Substituição!** {p_in} ← {p_out} ({team_flag} {team_name}) — {minute}'",
-            )
+            await _send_event(f"↕️ **Substituição!** {p_in} ← {p_out} ({team_flag} {team_name}) — {minute}'")
 
         elif etype == 7:  # Horário de início
             if not st["kickoff_notified"]:
@@ -594,10 +603,7 @@ async def _check_fifa_timeline(bot, channels, m: dict, st: dict) -> None:
                 await _send_all(bot, channels, embed=build_kickoff_embed(m))
 
         elif etype == 6:  # Pênalti marcado (árbitro)
-            await _send_all(
-                bot, channels,
-                content=f"🎯 **Pênalti!** {team_flag} **{team_name}** — {minute}'",
-            )
+            await _send_event(f"🎯 **Pênalti!** {team_flag} **{team_name}** — {minute}'")
 
         elif etype == 12:  # Chute a gol
             player = pmap.get(player_id, "") if player_id else ""
@@ -607,7 +613,7 @@ async def _check_fifa_timeline(bot, channels, m: dict, st: dict) -> None:
                 msg = f"🥅 **Chute a gol!** {team_flag} {team_name} — {minute}'"
             else:
                 msg = f"🥅 **Chute a gol!** — {minute}'"
-            await _send_all(bot, channels, content=msg)
+            await _send_event(msg)
 
         elif etype == 15:  # Impedimento
             player = pmap.get(player_id, "") if player_id else ""
@@ -617,7 +623,7 @@ async def _check_fifa_timeline(bot, channels, m: dict, st: dict) -> None:
                 msg = f"🚩 **Impedimento!** {team_flag} {team_name} — {minute}'"
             else:
                 msg = f"🚩 **Impedimento!** — {minute}'"
-            await _send_all(bot, channels, content=msg)
+            await _send_event(msg)
 
         elif etype == 16:  # Escanteio
             player = pmap.get(player_id, "") if player_id else ""
@@ -627,7 +633,7 @@ async def _check_fifa_timeline(bot, channels, m: dict, st: dict) -> None:
                 msg = f"🚩 **Escanteio!** {team_flag} {team_name} — {minute}'"
             else:
                 msg = f"🚩 **Escanteio!** — {minute}'"
-            await _send_all(bot, channels, content=msg)
+            await _send_event(msg)
 
         elif etype == 18:  # Falta
             player = pmap.get(player_id, "") if player_id else ""
@@ -637,7 +643,7 @@ async def _check_fifa_timeline(bot, channels, m: dict, st: dict) -> None:
                 msg = f"⚠️ **Falta!** {team_flag} {team_name} — {minute}'"
             else:
                 msg = f"⚠️ **Falta!** — {minute}'"
-            await _send_all(bot, channels, content=msg)
+            await _send_event(msg)
 
         elif etype == 57:  # Gol evitado
             player = pmap.get(player_id, "") if player_id else ""
@@ -647,7 +653,7 @@ async def _check_fifa_timeline(bot, channels, m: dict, st: dict) -> None:
                 msg = f"🧤 **Gol evitado!** {team_flag} {team_name} — {minute}'"
             else:
                 msg = f"🧤 **Gol evitado!** — {minute}'"
-            await _send_all(bot, channels, content=msg)
+            await _send_event(msg)
 
         elif etype == 83:  # Atraso / pausa
             desc = next(
@@ -655,7 +661,7 @@ async def _check_fifa_timeline(bot, channels, m: dict, st: dict) -> None:
                  if d.get("Locale") == "pt-BR"),
                 "Jogo interrompido",
             )
-            await _send_all(bot, channels, content=f"⏸️ **{desc}** — {minute}'")
+            await _send_all(bot, channels, embed=_event_embed(f"⏸️ **{desc}** — {minute}'", team_en))
 
 
 # ── Verificação de escalação ──────────────────────────────────────────────────
