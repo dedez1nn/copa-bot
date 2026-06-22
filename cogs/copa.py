@@ -132,6 +132,26 @@ def _embed_artilharia(scorers: list[dict]) -> discord.Embed:
     return embed
 
 
+def _embed_resumo_diario(jogos: list[dict], now_brt: datetime) -> discord.Embed:
+    hoje_str = now_brt.strftime("%d/%m/%Y")
+    embed = discord.Embed(
+        title="📅 Jogos de Hoje — Copa do Mundo 2026",
+        color=0x3B82F6,
+    )
+    lines = []
+    for m in sorted(jogos, key=lambda x: x["date_ts"]):
+        hora = datetime.fromtimestamp(m["date_ts"], tz=BRT).strftime("%H:%M")
+        grupo = m.get("group") or m.get("stage") or ""
+        hf = _flag(m["home_en"])
+        af = _flag(m["away_en"])
+        grupo_str = f"  *{grupo}*" if grupo else ""
+        lines.append(f"⚽ **{hora} BRT** — {hf} **{m['home_pt']}** × **{m['away_pt']}** {af}{grupo_str}")
+    embed.description = "\n".join(lines)
+    embed.set_footer(text=hoje_str + " · Copa do Mundo FIFA™ 2026")
+    embed.timestamp = discord.utils.utcnow()
+    return embed
+
+
 # ── Cog ───────────────────────────────────────────────────────────────────────
 
 class CopaCog(commands.Cog):
@@ -172,20 +192,12 @@ class CopaCog(commands.Cog):
         if not jogos:
             return
 
-        linhas = [f"📅 **Jogos de hoje — Copa 2026**\n"]
-        for m in sorted(jogos, key=lambda x: x["date_ts"]):
-            hora = datetime.fromtimestamp(m["date_ts"], tz=BRT).strftime("%H:%M")
-            grupo = m.get("group") or m.get("stage") or ""
-            hf = _flag(m["home_en"])
-            af = _flag(m["away_en"])
-            linhas.append(f"⚽ **{hf} {m['home_pt']} x {m['away_pt']} {af}**  {hora} BRT  *{grupo}*")
-
-        content = "\n".join(linhas)
+        embed = _embed_resumo_diario(jogos, datetime.now(BRT))
         for guild_id, channel_id in self._monitor_channels:
             ch = self.bot.get_channel(channel_id)
             if ch:
                 try:
-                    await ch.send(content)
+                    await ch.send(embed=embed)
                 except Exception:
                     logger.exception("Erro ao enviar resumo diário para guild %s", guild_id)
 

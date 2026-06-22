@@ -14,11 +14,19 @@ from cogs.copa import (
     _embed_grupo,
     _embed_jogos_rodada,
     _embed_team,
+    _embed_resumo_diario,
 )
 from services import copa as copa_svc
 from services import youtube
 from services.copa import BRT
-from services.copa_monitor import build_lineup_embed
+from services.copa_monitor import (
+    build_lineup_embed,
+    build_pre_game_embed,
+    build_kickoff_embed,
+    build_ht_embed,
+    build_2ht_embed,
+    build_final_embed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +110,62 @@ _FAKE_ARTILHARIA = [
     {"name": "Memphis Depay",  "team": "Holanda",    "goals": 1},
     {"name": "Erling Haaland", "team": "Noruega",    "goals": 1},
 ]
+
+_FAKE_LIVE_DATA = {
+    "Period": 4,
+    "MatchStatus": 1,
+    "HomeTeam": {
+        "Score": 2,
+        "Goals": [
+            {"IdPlayer": 1010, "Minute": 23, "Period": 3, "Type": 1},
+            {"IdPlayer": 1011, "Minute": 44, "Period": 3, "Type": 1},
+        ],
+        "Bookings": [
+            {"IdPlayer": 1006, "Minute": 38, "Card": 1},
+        ],
+        "Substitutions": [
+            {"IdPlayerOn": 1007, "IdPlayerOff": 1008, "Minute": 46},
+        ],
+        "Players": [_fp(pid, n, name, pos) for pid, n, name, pos in [
+            (1001,  1, "Alisson", 0), (1002, 2, "Danilo", 1),
+            (1003,  3, "Marquinhos", 1), (1004, 4, "G. Magalhães", 1),
+            (1005,  6, "G. Arana", 1), (1006, 5, "Casemiro", 2),
+            (1007,  8, "Bruno G.", 2), (1008, 10, "Paquetá", 2),
+            (1009, 11, "Rodrygo", 3), (1010, 7, "Vinícius Jr", 3),
+            (1011, 19, "Raphinha", 3),
+        ]],
+    },
+    "AwayTeam": {
+        "Score": 1,
+        "Goals": [
+            {"IdPlayer": 2011, "Minute": 31, "Period": 3, "Type": 1},
+        ],
+        "Bookings": [
+            {"IdPlayer": 2009, "Minute": 55, "Card": 2},
+        ],
+        "Substitutions": [
+            {"IdPlayerOn": 2007, "IdPlayerOff": 2008, "Minute": 58},
+            {"IdPlayerOn": 2005, "IdPlayerOff": 2006, "Minute": 72},
+        ],
+        "Players": [_fp(pid, n, name, pos) for pid, n, name, pos in [
+            (2001, 23, "Dibu Martínez", 0), (2002, 26, "N. Molina", 1),
+            (2003, 13, "C. Romero", 1), (2004,  5, "L. Martínez", 1),
+            (2005,  3, "Tagliafico", 1), (2006,  7, "De Paul", 2),
+            (2007, 24, "E. Fernández", 2), (2008, 20, "Mac Allister", 2),
+            (2009, 11, "Di María", 3), (2010, 22, "L. Martínez", 3),
+            (2011, 10, "Messi", 3),
+        ]],
+    },
+    "Statistics": [
+        {"Type": 1, "HomeValue": 58, "AwayValue": 42},
+        {"Type": 2, "HomeValue": 12, "AwayValue": 7},
+        {"Type": 3, "HomeValue": 5, "AwayValue": 3},
+        {"Type": 4, "HomeValue": 6, "AwayValue": 3},
+        {"Type": 5, "HomeValue": 9, "AwayValue": 14},
+    ],
+}
+
+_FAKE_LIVE_MATCH = _fm("brazil", "Brasil", "argentina", "Argentina", "inprogress", 2, 1, -3300, "Grupo B")
 
 _FAKE_ESCALACAO_MATCH = _fm("brazil", "Brasil", "argentina", "Argentina", "notstarted", None, None, 3600)
 
@@ -214,14 +278,8 @@ class DevCog(commands.Cog):
         if not jogos:
             await interaction.followup.send("Nenhum jogo agendado para hoje.", ephemeral=True)
             return
-        linhas = ["📅 **Jogos de hoje — Copa 2026**\n"]
-        for m in sorted(jogos, key=lambda x: x["date_ts"]):
-            hora = datetime.fromtimestamp(m["date_ts"], tz=BRT).strftime("%H:%M")
-            grupo = m.get("group") or m.get("stage") or ""
-            hf = copa_svc.flag(m["home_en"])
-            af = copa_svc.flag(m["away_en"])
-            linhas.append(f"⚽ **{hf} {m['home_pt']} x {m['away_pt']} {af}**  {hora} BRT  *{grupo}*")
-        await interaction.followup.send("\n".join(linhas))
+        embed = _embed_resumo_diario(jogos, datetime.now(BRT))
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="teste-aviso-1hora", description="[TESTE] Aviso de 1 hora para a partida mais próxima")
     @app_commands.default_permissions(administrator=True)
@@ -232,10 +290,8 @@ class DevCog(commands.Cog):
             await interaction.followup.send("❌ Nenhuma partida encontrada.", ephemeral=True)
             return
         live_url = await asyncio.to_thread(youtube.get_cazetv_live, m["date_ts"])
-        live_line = f"\n📺 **Assista ao vivo:** {live_url}" if live_url else ""
-        await interaction.followup.send(
-            f"⏰ **Em 60 minutos!**\n⚽ {_jogo(m)}{live_line}"
-        )
+        embed = build_pre_game_embed(m, 60, live_url)
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="teste-aviso-30min", description="[TESTE] Aviso de 30 minutos para a partida mais próxima")
     @app_commands.default_permissions(administrator=True)
@@ -246,10 +302,8 @@ class DevCog(commands.Cog):
             await interaction.followup.send("❌ Nenhuma partida encontrada.", ephemeral=True)
             return
         live_url = await asyncio.to_thread(youtube.get_cazetv_live, m["date_ts"])
-        live_line = f"\n📺 **Assista ao vivo:** {live_url}" if live_url else ""
-        await interaction.followup.send(
-            f"⏰ **Em 30 minutos!**\n⚽ {_jogo(m)}{live_line}"
-        )
+        embed = build_pre_game_embed(m, 30, live_url)
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="teste-inicio", description="[TESTE] Notificação de início de jogo")
     @app_commands.default_permissions(administrator=True)
@@ -259,7 +313,7 @@ class DevCog(commands.Cog):
         if not m:
             await interaction.followup.send("❌ Nenhuma partida encontrada.", ephemeral=True)
             return
-        await interaction.followup.send(f"🔔 **Começou!**\n⚽ {_jogo(m)}")
+        await interaction.followup.send(embed=build_kickoff_embed(m))
 
     @app_commands.command(name="teste-fim-1t", description="[TESTE] Notificação de fim do 1º tempo")
     @app_commands.default_permissions(administrator=True)
@@ -271,33 +325,21 @@ class DevCog(commands.Cog):
             return
         h = m["home_score"] or 0
         a = m["away_score"] or 0
-        await interaction.followup.send(
-            f"🔔 **Fim do 1º tempo**\n**{m['home_pt']} {h}-{a} {m['away_pt']}**"
-        )
+        await interaction.followup.send(embed=build_ht_embed(m, h, a))
 
-    @app_commands.command(name="teste-inicio-2t", description="[TESTE] Notificação de início do 2º tempo")
+    @app_commands.command(name="teste-inicio-2t", description="[TESTE] Notificação de início do 2º tempo (dados falsos)")
     @app_commands.default_permissions(administrator=True)
     async def teste_inicio_2t(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
-        m = await _partida_proxima()
-        if not m:
-            await interaction.followup.send("❌ Nenhuma partida encontrada.", ephemeral=True)
-            return
-        await interaction.followup.send(f"🔔 **2º tempo começou!**\n⚽ {_jogo(m)}")
+        embed = build_2ht_embed(_FAKE_LIVE_MATCH, 2, 1, _FAKE_LIVE_DATA)
+        await interaction.followup.send(embed=embed)
 
-    @app_commands.command(name="teste-fim-jogo", description="[TESTE] Notificação de fim de jogo")
+    @app_commands.command(name="teste-fim-jogo", description="[TESTE] Notificação de fim de jogo (dados falsos)")
     @app_commands.default_permissions(administrator=True)
     async def teste_fim_jogo(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
-        m = await _partida_proxima()
-        if not m:
-            await interaction.followup.send("❌ Nenhuma partida encontrada.", ephemeral=True)
-            return
-        h = m["home_score"] or 0
-        a = m["away_score"] or 0
-        await interaction.followup.send(
-            f"🏁 **Fim de jogo!**\n**{m['home_pt']} {h}-{a} {m['away_pt']}**"
-        )
+        embed = build_final_embed(_FAKE_LIVE_MATCH, 2, 1, _FAKE_LIVE_DATA)
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="teste-suspenso", description="[TESTE] Notificação de jogo suspenso")
     @app_commands.default_permissions(administrator=True)

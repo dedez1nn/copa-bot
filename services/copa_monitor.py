@@ -25,12 +25,26 @@ VAR_WINDOW_SECS = 600
 
 _POS_FIFA = {0: "GK", 1: "DEF", 2: "MEI", 3: "ATA"}
 
+_STAT_LABELS: dict[int, str] = {
+    1: "Posse de bola (%)",
+    2: "Chutes",
+    3: "Chutes no gol",
+    4: "Escanteios",
+    5: "Faltas",
+    6: "Impedimentos",
+    7: "Cartões amarelos",
+    8: "Cartões vermelhos",
+    9: "Defesas",
+    10: "Passes",
+    11: "Precisão de passes (%)",
+}
+
 
 def _state(key: str) -> dict:
     if key not in _watch:
         _watch[key] = {
             "announced_60": False,
-        "announced_30": False,
+            "announced_30": False,
             "kicked_off": False,
             "primed": False,
             "ht_sent": False,
@@ -47,6 +61,222 @@ def _state(key: str) -> dict:
             "pending_cards": {},
         }
     return _watch[key]
+
+
+# ── Formatadores de seção ─────────────────────────────────────────────────────
+
+def _goals_text(goals_raw: list[tuple[str, dict]], pmap: dict, period: int | None = None) -> str:
+    filtered = [(t, g) for t, g in goals_raw if period is None or g.get("Period") == period]
+    if not filtered:
+        return ""
+    lines = []
+    for team_pt, g in sorted(filtered, key=lambda x: (x[1].get("Period", 0), x[1].get("Minute", 0))):
+        player = pmap.get(str(g.get("IdPlayer") or ""), "?")
+        minute = g.get("Minute", "?")
+        gtype = g.get("Type", 2)
+        extra = " *(contra)*" if gtype == 3 else (" *(pen.)*" if gtype == 4 else "")
+        lines.append(f"⚽ **{player}{extra}** {minute}' — *{team_pt}*")
+    return "\n".join(lines)
+
+
+def _reds_text(cards_raw: list[tuple[str, dict]], pmap: dict) -> str:
+    reds = [(t, b) for t, b in cards_raw if b.get("Card") == 2]
+    if not reds:
+        return ""
+    lines = []
+    for team_pt, b in sorted(reds, key=lambda x: x[1].get("Minute", 0)):
+        player = pmap.get(str(b.get("IdPlayer") or ""), "?")
+        minute = b.get("Minute", "?")
+        lines.append(f"🟥 **{player}** {minute}' — *{team_pt}*")
+    return "\n".join(lines)
+
+
+def _subs_text(home_data: dict, away_data: dict, pmap: dict, home_pt: str, away_pt: str) -> str:
+    subs = []
+    for team_pt, side in [(home_pt, home_data), (away_pt, away_data)]:
+        for s in (side.get("Substitutions") or []):
+            subs.append((team_pt, s))
+    if not subs:
+        return ""
+    lines = []
+    for team_pt, s in sorted(subs, key=lambda x: x[1].get("Minute", 0)):
+        p_on = pmap.get(str(s.get("IdPlayerOn") or s.get("IdPlayerSubstitute") or ""), "?")
+        p_off = pmap.get(str(s.get("IdPlayerOff") or s.get("IdPlayer") or ""), "?")
+        minute = s.get("Minute", "?")
+        lines.append(f"↕️ **{p_on}** ← {p_off}  {minute}' — *{team_pt}*")
+    return "\n".join(lines)
+
+
+def _stats_text(stats: list, home_pt: str, away_pt: str) -> str:
+    if not stats:
+        return ""
+    lines = [f"`{'Estatística':<24} {home_pt[:10]:>10}  {away_pt[:10]:<10}`"]
+    for s in stats:
+        label = _STAT_LABELS.get(s.get("Type", 0)) or s.get("Name") or s.get("Type")
+        if not label:
+            continue
+        hv = s.get("HomeValue", "—")
+        av = s.get("AwayValue", "—")
+        lines.append(f"`{str(label):<24} {str(hv):>10}  {str(av):<10}`")
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
+def _live_field(live_url: str) -> tuple[str, str]:
+    """Retorna (name, value) para o campo de transmissão."""
+    if " (prevista" in live_url:
+        url_part, rest = live_url.split(" (prevista às ", 1)
+        time_str = rest.rstrip(")")
+        return "📺 Transmissão", f"[CazeTV — prevista às {time_str}]({url_part})"
+    return "📺 Transmissão", f"[CazeTV — ao vivo]({live_url})"
+
+
+# ── Embeds públicos ───────────────────────────────────────────────────────────
+
+def build_pre_game_embed(m: dict, mins: int, live_url: str | None = None) -> discord.Embed:
+    hf = flag(m["home_en"])
+    af = flag(m["away_en"])
+    hora = datetime.fromtimestamp(m["date_ts"], tz=BRT).strftime("%H:%M")
+    grupo = m.get("group") or m.get("stage") or ""
+    is_brazil = is_brazil_match(m)
+
+    embed = discord.Embed(
+        title=f"⏰ Em {mins} minuto{'s' if mins != 1 else ''}!",
+        description=f"**{hf} {m['home_pt']}  ×  {m['away_pt']} {af}**",
+        color=0x009C3B if is_brazil else 0x3B82F6,
+    )
+    embed.add_field(name="🕐 Horário", value=f"**{hora} BRT**", inline=True)
+    if grupo:
+        embed.add_field(name="🏆 Fase", value=grupo, inline=True)
+    if live_url:
+        fname, fval = _live_field(live_url)
+        embed.add_field(name=fname, value=fval, inline=False)
+    embed.set_footer(text="Copa do Mundo FIFA™ 2026")
+    embed.timestamp = discord.utils.utcnow()
+    return embed
+
+
+def build_kickoff_embed(m: dict) -> discord.Embed:
+    hf = flag(m["home_en"])
+    af = flag(m["away_en"])
+    grupo = m.get("group") or m.get("stage") or ""
+    is_brazil = is_brazil_match(m)
+
+    embed = discord.Embed(
+        title="🔔 Apito Inicial!",
+        description=f"**{hf} {m['home_pt']}  0 — 0  {m['away_pt']} {af}**",
+        color=0x009C3B if is_brazil else 0x2ECC71,
+    )
+    if grupo:
+        embed.add_field(name="🏆 Fase", value=grupo, inline=True)
+    embed.set_footer(text="Copa do Mundo FIFA™ 2026")
+    embed.timestamp = discord.utils.utcnow()
+    return embed
+
+
+def build_ht_embed(m: dict, h_score: int, a_score: int) -> discord.Embed:
+    hf = flag(m["home_en"])
+    af = flag(m["away_en"])
+
+    embed = discord.Embed(
+        title="🔔 Fim do 1º Tempo",
+        description=f"**{hf} {m['home_pt']}  {h_score} — {a_score}  {m['away_pt']} {af}**",
+        color=0xFFA500,
+    )
+    embed.set_footer(text="Copa do Mundo FIFA™ 2026")
+    embed.timestamp = discord.utils.utcnow()
+    return embed
+
+
+def build_2ht_embed(m: dict, h_score: int, a_score: int, data: dict) -> discord.Embed:
+    hf = flag(m["home_en"])
+    af = flag(m["away_en"])
+    home_data = data.get("HomeTeam") or {}
+    away_data = data.get("AwayTeam") or {}
+    pmap = _player_map_fifa(home_data, away_data)
+    home_pt, away_pt = m["home_pt"], m["away_pt"]
+
+    all_goals = [(home_pt, g) for g in (home_data.get("Goals") or [])] + \
+                [(away_pt, g) for g in (away_data.get("Goals") or [])]
+    all_cards = [(home_pt, b) for b in (home_data.get("Bookings") or [])] + \
+                [(away_pt, b) for b in (away_data.get("Bookings") or [])]
+
+    is_brazil = is_brazil_match(m)
+    embed = discord.Embed(
+        title="🔔 2º Tempo Iniciado",
+        description=(
+            f"**{hf} {m['home_pt']}  {h_score} — {a_score}  {m['away_pt']} {af}**\n"
+            f"*Placar ao intervalo*"
+        ),
+        color=0x009C3B if is_brazil else 0xFFA500,
+    )
+
+    goals = _goals_text(all_goals, pmap, period=3)
+    if goals:
+        embed.add_field(name="⚽ Gols — 1º Tempo", value=goals, inline=False)
+
+    reds = _reds_text(all_cards, pmap)
+    if reds:
+        embed.add_field(name="🟥 Cartões Vermelhos", value=reds, inline=False)
+
+    subs = _subs_text(home_data, away_data, pmap, home_pt, away_pt)
+    if subs:
+        embed.add_field(name="↕️ Substituições no Intervalo", value=subs, inline=False)
+
+    embed.set_footer(text="Copa do Mundo FIFA™ 2026")
+    embed.timestamp = discord.utils.utcnow()
+    return embed
+
+
+def build_final_embed(m: dict, h_score: int, a_score: int, data: dict) -> discord.Embed:
+    hf = flag(m["home_en"])
+    af = flag(m["away_en"])
+    home_data = data.get("HomeTeam") or {}
+    away_data = data.get("AwayTeam") or {}
+    pmap = _player_map_fifa(home_data, away_data)
+    home_pt, away_pt = m["home_pt"], m["away_pt"]
+
+    all_goals = [(home_pt, g) for g in (home_data.get("Goals") or [])] + \
+                [(away_pt, g) for g in (away_data.get("Goals") or [])]
+    all_cards = [(home_pt, b) for b in (home_data.get("Bookings") or [])] + \
+                [(away_pt, b) for b in (away_data.get("Bookings") or [])]
+
+    is_brazil = is_brazil_match(m)
+    if is_brazil:
+        br_score = h_score if m["home_en"] == "brazil" else a_score
+        op_score = a_score if m["home_en"] == "brazil" else h_score
+        color = 0x009C3B if br_score > op_score else (0xFFD700 if br_score == op_score else 0xE8473F)
+    else:
+        color = 0x2C3E50
+
+    grupo = m.get("group") or m.get("stage") or ""
+    embed = discord.Embed(
+        title="🏁 Fim de Jogo",
+        description=f"**{hf} {m['home_pt']}  {h_score} — {a_score}  {m['away_pt']} {af}**",
+        color=color,
+    )
+    if grupo:
+        embed.add_field(name="🏆 Fase", value=grupo, inline=True)
+
+    goals = _goals_text(all_goals, pmap)
+    if goals:
+        embed.add_field(name="⚽ Gols", value=goals, inline=False)
+
+    reds = _reds_text(all_cards, pmap)
+    if reds:
+        embed.add_field(name="🟥 Cartões Vermelhos", value=reds, inline=False)
+
+    subs = _subs_text(home_data, away_data, pmap, home_pt, away_pt)
+    if subs:
+        embed.add_field(name="↕️ Substituições", value=subs, inline=False)
+
+    raw_stats = (data.get("Statistics") or data.get("MatchStatistics") or [])
+    stats = _stats_text(raw_stats, home_pt, away_pt)
+    if stats:
+        embed.add_field(name="📊 Estatísticas", value=stats, inline=False)
+
+    embed.set_footer(text="Copa do Mundo FIFA™ 2026")
+    embed.timestamp = discord.utils.utcnow()
+    return embed
 
 
 # ── Embed de escalação ────────────────────────────────────────────────────────
@@ -150,7 +380,6 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
             st["2ht_sent"] = True
         return
 
-    # -- conjuntos atuais para checar remoções via VAR --
     all_goals_raw = [(home_pt, g) for g in (home.get("Goals") or [])] + \
                     [(away_pt, g) for g in (away.get("Goals") or [])]
     current_goal_keys: set = {
@@ -203,15 +432,13 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
         }
         await _send_all(bot, channels, content=f"🟥 **{player}** ({team_pt}) — {minute}'")
 
-    # -- VAR: gol removido da API → anulado --
+    # -- VAR: gol removido --
     now_var = time.time()
     for gkey, info in list(st["pending_goals"].items()):
         if gkey not in current_goal_keys:
             del st["pending_goals"][gkey]
             prev_h, prev_a = info.get("score_at_announce", (None, None))
-            score_changed = (prev_h, prev_a) != (h_score, a_score)
-            if not score_changed:
-                # placar igual → API corrigiu dado errado, não foi VAR
+            if (prev_h, prev_a) == (h_score, a_score):
                 continue
             await _send_all(
                 bot, channels,
@@ -224,7 +451,7 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
         elif now_var - info["ts"] >= VAR_WINDOW_SECS:
             del st["pending_goals"][gkey]
 
-    # -- VAR: vermelho removido da API → revertido --
+    # -- VAR: vermelho revertido --
     for ckey, info in list(st["pending_cards"].items()):
         if ckey not in current_red_keys:
             del st["pending_cards"][ckey]
@@ -243,10 +470,8 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
     if period != last:
         if last == 3 and not st["ht_sent"]:
             st["ht_sent"] = True
-            await _send_all(
-                bot, channels,
-                content=f"🔔 **Fim do 1º tempo**\n**{home_pt} {h_score}-{a_score} {away_pt}**",
-            )
+            await _send_all(bot, channels, embed=build_ht_embed(m, h_score, a_score))
+
         if period == 4 and not st["2ht_sent"]:
             has_2t = any(
                 g.get("Period") == 4
@@ -255,18 +480,13 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
             )
             if has_2t:
                 st["2ht_sent"] = True
-                await _send_all(
-                    bot, channels,
-                    content=f"🔔 **2º tempo começou!**\n**{home_pt} {h_score}-{a_score} {away_pt}**",
-                )
+                await _send_all(bot, channels, embed=build_2ht_embed(m, h_score, a_score, data))
+
         st["last_period"] = period
 
     if not st["final_sent"] and match_status == 0 and st["kicked_off"]:
         st["final_sent"] = True
-        await _send_all(
-            bot, channels,
-            content=f"🏁 **Fim de jogo!**\n**{home_pt} {h_score}-{a_score} {away_pt}**",
-        )
+        await _send_all(bot, channels, embed=build_final_embed(m, h_score, a_score, data))
 
 
 # ── Verificação de escalação ──────────────────────────────────────────────────
@@ -328,30 +548,14 @@ async def run_monitor_tick(bot: discord.Client, channels: list[tuple[int, int]])
             st["announced_60"] = True
             mins = max(1, int((ts - now) / 60))
             live_url = await asyncio.to_thread(youtube.get_cazetv_live, ts)
-            live_line = f"\n📺 **Assista ao vivo:** {live_url}" if live_url else ""
-            await _send_all(
-                bot, channels,
-                content=(
-                    f"⏰ **Em {mins} minutos!**\n"
-                    f"⚽ **{hf} {m['home_pt']} x {m['away_pt']} {af}**"
-                    f"{live_line}"
-                ),
-            )
+            await _send_all(bot, channels, embed=build_pre_game_embed(m, mins, live_url))
 
         # ── Aviso 30 min antes ──
         if not st["announced_30"] and status == "notstarted" and 0 < (ts - now) <= 1800:
             st["announced_30"] = True
             mins = max(1, int((ts - now) / 60))
             live_url = await asyncio.to_thread(youtube.get_cazetv_live, ts)
-            live_line = f"\n📺 **Assista ao vivo:** {live_url}" if live_url else ""
-            await _send_all(
-                bot, channels,
-                content=(
-                    f"⏰ **Em {mins} minuto{'s' if mins != 1 else ''}!**\n"
-                    f"⚽ **{hf} {m['home_pt']} x {m['away_pt']} {af}**"
-                    f"{live_line}"
-                ),
-            )
+            await _send_all(bot, channels, embed=build_pre_game_embed(m, mins, live_url))
 
         # ── Escalação (1h antes) ──
         if not st["lineup_sent"] and status == "notstarted" and 0 < (ts - now) <= LINEUP_WINDOW_SECS:
@@ -401,21 +605,22 @@ async def run_monitor_tick(bot: discord.Client, channels: list[tuple[int, int]])
         if not st["kicked_off"] and status == "inprogress":
             st["kicked_off"] = True
             st["primed"] = True
-            await _send_all(
-                bot, channels,
-                content=f"🔔 **Começou!**\n⚽ **{hf} {m['home_pt']} 0-0 {m['away_pt']} {af}**",
-            )
+            await _send_all(bot, channels, embed=build_kickoff_embed(m))
 
         # ── Ao vivo ──
         if status == "inprogress":
             await _check_fifa_live(bot, channels, m, st)
 
-        # ── Fim de jogo ──
+        # ── Fim de jogo (via status finished) ──
         if not st["final_sent"] and status == "finished" and st["kicked_off"]:
             st["final_sent"] = True
-            h = m["home_score"] if m["home_score"] is not None else "?"
-            a = m["away_score"] if m["away_score"] is not None else "?"
-            await _send_all(
-                bot, channels,
-                content=f"🏁 **Fim de jogo!**\n**{m['home_pt']} {h}-{a} {m['away_pt']}**",
-            )
+            h = m["home_score"] if m["home_score"] is not None else 0
+            a = m["away_score"] if m["away_score"] is not None else 0
+            data = await asyncio.to_thread(_load_fifa_live, m["fifa_id"])
+            if data:
+                await _send_all(bot, channels, embed=build_final_embed(m, h, a, data))
+            else:
+                await _send_all(
+                    bot, channels,
+                    content=f"🏁 **Fim de jogo!**\n**{m['home_pt']} {h}-{a} {m['away_pt']}**",
+                )
