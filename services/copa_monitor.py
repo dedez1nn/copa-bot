@@ -17,6 +17,7 @@ from services import youtube
 logger = logging.getLogger(__name__)
 
 _watch: dict[str, dict] = {}
+_first_tick = True
 
 LINEUP_INTERVAL_BRAZIL = 10
 LINEUP_INTERVAL_OTHER = 60
@@ -503,6 +504,7 @@ async def check_lineup(m: dict) -> discord.Embed | None:
 # ── Job principal (chamado a cada 10s pelo cog) ───────────────────────────────
 
 async def run_monitor_tick(bot: discord.Client, channels: list[tuple[int, int]]) -> None:
+    global _first_tick
     if not channels:
         return
 
@@ -524,6 +526,10 @@ async def run_monitor_tick(bot: discord.Client, channels: list[tuple[int, int]])
         status = m["status"]
         hf = flag(m["home_en"])
         af = flag(m["away_en"])
+
+        # Na inicialização, suprime escalação para jogos já dentro da janela de 1h
+        if _first_tick and not st["lineup_sent"] and status == "notstarted" and 0 < (ts - now) <= LINEUP_WINDOW_SECS:
+            st["lineup_sent"] = True
 
         # ── Suspensão / retomada ──
         _last = st["last_status"]
@@ -624,3 +630,5 @@ async def run_monitor_tick(bot: discord.Client, channels: list[tuple[int, int]])
                     bot, channels,
                     content=f"🏁 **Fim de jogo!**\n**{m['home_pt']} {h}-{a} {m['away_pt']}**",
                 )
+
+    _first_tick = False
