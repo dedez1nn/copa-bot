@@ -176,6 +176,7 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
         st["pending_goals"][gkey] = {
             "ts": time.time(), "player": player, "team_pt": team_pt,
             "minute": minute, "extra": extra,
+            "score_at_announce": (h_score, a_score),
         }
         await _send_all(
             bot, channels,
@@ -205,6 +206,11 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
     for gkey, info in list(st["pending_goals"].items()):
         if gkey not in current_goal_keys:
             del st["pending_goals"][gkey]
+            prev_h, prev_a = info.get("score_at_announce", (None, None))
+            score_changed = (prev_h, prev_a) != (h_score, a_score)
+            if not score_changed:
+                # placar igual → API corrigiu dado errado, não foi VAR
+                continue
             await _send_all(
                 bot, channels,
                 content=(
