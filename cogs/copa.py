@@ -225,12 +225,21 @@ class CopaCog(commands.Cog):
 
     @tasks.loop(seconds=10)
     async def _monitor_loop(self) -> None:
-        await monitor.run_monitor_tick(self.bot, self._monitor_channels)
-        await self._check_daily_summary()
+        try:
+            await monitor.run_monitor_tick(self.bot, self._monitor_channels)
+            await self._check_daily_summary()
+        except Exception:
+            logger.exception("Erro no loop de monitoramento (tick ignorado)")
+
+    @_monitor_loop.error
+    async def _monitor_loop_error(self, error: Exception) -> None:
+        logger.exception("Loop de monitoramento parou com erro — reiniciando", exc_info=error)
+        self._monitor_loop.restart()
 
     @_monitor_loop.before_loop
     async def _before_monitor(self) -> None:
         await self.bot.wait_until_ready()
+        logger.info("Loop de monitoramento iniciado")
 
     async def _check_daily_summary(self) -> None:
         now_brt = datetime.now(BRT)

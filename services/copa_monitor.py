@@ -666,139 +666,147 @@ async def run_monitor_tick(bot: discord.Client, channels: list[tuple[int, int]])
         return
 
     now = time.time()
+    logger.debug("[tick] rodada com %d jogos | channels=%d", len(matches), len(channels))
 
     for m in matches:
         if not m.get("fifa_id"):
             continue
-
-        key = m["fifa_id"]
-        st = _state(key)
-        ts = m["date_ts"]
-        status = m["status"]
-        hf = flag(m["home_en"])
-        af = flag(m["away_en"])
-
-        # Na inicialização, suprime escalação para jogos já dentro da janela de 1h
-        if _first_tick and not st["lineup_sent"] and status == "notstarted" and 0 < (ts - now) <= LINEUP_WINDOW_SECS:
-            st["lineup_sent"] = True
-
-        # ── Suspensão / retomada ──
-        _last = st["last_status"]
-        if _last == "inprogress" and status == "notstarted" and st["kicked_off"] and not st["final_sent"]:
-            st["suspended"] = True
-            await _send_all(
-                bot, channels,
-                content=f"⚠️ **Jogo suspenso temporariamente!**\n⚽ **{hf} {m['home_pt']} x {m['away_pt']} {af}**",
-            )
-        elif st.get("suspended") and status == "inprogress":
-            st["suspended"] = False
-            h = m["home_score"] if m["home_score"] is not None else 0
-            a = m["away_score"] if m["away_score"] is not None else 0
-            await _send_all(
-                bot, channels,
-                content=f"▶️ **Jogo retomado!**\n⚽ **{hf} {m['home_pt']} {h}-{a} {m['away_pt']} {af}**",
-            )
-        st["last_status"] = status
-
-        # ── Aviso 1 hora antes ──
-        if not st["announced_60"] and status == "notstarted" and 1800 < (ts - now) <= 3600:
-            st["announced_60"] = True
-            mins = max(1, int((ts - now) / 60))
-            live_url = await asyncio.to_thread(youtube.get_cazetv_live, ts)
-            await _send_all(bot, channels, embed=build_pre_game_embed(m, mins, live_url))
-
-        # ── Aviso 30 min antes ──
-        if not st["announced_30"] and status == "notstarted" and 0 < (ts - now) <= 1800:
-            st["announced_30"] = True
-            mins = max(1, int((ts - now) / 60))
-            live_url = await asyncio.to_thread(youtube.get_cazetv_live, ts)
-            await _send_all(bot, channels, embed=build_pre_game_embed(m, mins, live_url))
-
-        # ── Escalação (1h antes) ──
-        if not st["lineup_sent"] and status == "notstarted" and 0 < (ts - now) <= LINEUP_WINDOW_SECS:
-            interval = LINEUP_INTERVAL_BRAZIL if is_brazil_match(m) else LINEUP_INTERVAL_OTHER
-            if (now - st["last_lineup_check"]) >= interval:
-                st["last_lineup_check"] = now
-                embed = await check_lineup(m)
-                if embed:
-                    st["lineup_sent"] = True
-                    for guild_id, channel_id in channels:
-                        ch = bot.get_channel(channel_id)
-                        if ch is None:
-                            continue
-                        try:
-                            await ch.send(
-                                content=(
-                                    f"📋 **Escalação divulgada!** "
-                                    f"{hf} {m['home_pt']} x {m['away_pt']} {af}"
-                                ),
-                                embed=embed,
-                            )
-                        except Exception:
-                            logger.exception("Erro ao enviar embed de escalação")
-
-        # ── Priming ──
-        if not st["primed"] and status == "inprogress":
-            logger.info("[priming] %s x %s (first_tick=%s)", m["home_pt"], m["away_pt"], _first_tick)
-            st["kicked_off"] = True
-            data = await asyncio.to_thread(_load_fifa_live, m["fifa_id"])
-            if data:
-                home = data.get("HomeTeam") or {}
-                away = data.get("AwayTeam") or {}
-                st["home_team_id"] = home.get("IdTeam")
-                st["away_team_id"] = away.get("IdTeam")
-                st["pmap"] = _player_map_fifa(home, away)
-                for side in (home, away):
-                    for g in (side.get("Goals") or []):
-                        st["seen_goals"].add((g.get("IdPlayer"), g.get("Minute"), g.get("Period"), g.get("Type")))
-                    for b in (side.get("Bookings") or []):
-                        st["seen_cards"].add((b.get("IdPlayer"), b.get("Minute"), b.get("Card")))
-                period = data.get("Period")
-                st["last_period"] = period
-                if period is not None and period > 3:
-                    st["ht_sent"] = True
-                if period is not None and period >= 4:
-                    st["2ht_sent"] = True
-                tl_events = await asyncio.to_thread(_load_fifa_timeline, m)
-                primed_tl = 0
-                for ev in (tl_events or []):
-                    eid = ev.get("EventId")
-                    etype_ev = ev.get("Type")
-                    if not eid:
-                        continue
-                    if etype_ev == 7:
-                        if _first_tick:
-                            st["seen_timeline_events"].add(eid)
-                            st["kickoff_notified"] = True
-                    else:
-                        st["seen_timeline_events"].add(eid)
-                        primed_tl += 1
-                logger.info("[priming] concluído: gols=%d cartões=%d tl_eventos=%d",
-                            len(st["seen_goals"]), len(st["seen_cards"]), primed_tl)
-                st["primed"] = True
-            else:
-                logger.warning("[priming] live API sem dados para %s x %s", m["home_pt"], m["away_pt"])
-            continue
-
-        # ── Ao vivo ──
-        if status == "inprogress":
-            logger.debug("[tick] monitorando %s x %s (primed=%s kicked_off=%s)",
-                         m["home_pt"], m["away_pt"], st["primed"], st["kicked_off"])
-            await _check_fifa_live(bot, channels, m, st)
-            await _check_fifa_timeline(bot, channels, m, st)
-
-        # ── Fim de jogo (via status finished) ──
-        if not st["final_sent"] and status == "finished" and st["kicked_off"]:
-            st["final_sent"] = True
-            h = m["home_score"] if m["home_score"] is not None else 0
-            a = m["away_score"] if m["away_score"] is not None else 0
-            data = await asyncio.to_thread(_load_fifa_live, m["fifa_id"])
-            if data:
-                await _send_all(bot, channels, embed=build_final_embed(m, h, a, data))
-            else:
-                await _send_all(
-                    bot, channels,
-                    content=f"🏁 **Fim de jogo!**\n**{m['home_pt']} {h}-{a} {m['away_pt']}**",
-                )
+        try:
+            await _tick_match(bot, channels, m, now)
+        except Exception:
+            logger.exception("[tick] erro ao processar %s x %s — ignorado neste tick",
+                             m.get("home_pt"), m.get("away_pt"))
 
     _first_tick = False
+
+
+async def _tick_match(bot, channels, m: dict, now: float) -> None:
+    key = m["fifa_id"]
+    st = _state(key)
+    ts = m["date_ts"]
+    status = m["status"]
+    hf = flag(m["home_en"])
+    af = flag(m["away_en"])
+
+    # Na inicialização, suprime escalação para jogos já dentro da janela de 1h
+    if _first_tick and not st["lineup_sent"] and status == "notstarted" and 0 < (ts - now) <= LINEUP_WINDOW_SECS:
+        st["lineup_sent"] = True
+
+    # ── Suspensão / retomada ──
+    _last = st["last_status"]
+    if _last == "inprogress" and status == "notstarted" and st["kicked_off"] and not st["final_sent"]:
+        st["suspended"] = True
+        await _send_all(
+            bot, channels,
+            content=f"⚠️ **Jogo suspenso temporariamente!**\n⚽ **{hf} {m['home_pt']} x {m['away_pt']} {af}**",
+        )
+    elif st.get("suspended") and status == "inprogress":
+        st["suspended"] = False
+        h = m["home_score"] if m["home_score"] is not None else 0
+        a = m["away_score"] if m["away_score"] is not None else 0
+        await _send_all(
+            bot, channels,
+            content=f"▶️ **Jogo retomado!**\n⚽ **{hf} {m['home_pt']} {h}-{a} {m['away_pt']} {af}**",
+        )
+    st["last_status"] = status
+
+    # ── Aviso 1 hora antes ──
+    if not st["announced_60"] and status == "notstarted" and 1800 < (ts - now) <= 3600:
+        st["announced_60"] = True
+        mins = max(1, int((ts - now) / 60))
+        live_url = await asyncio.to_thread(youtube.get_cazetv_live, ts)
+        await _send_all(bot, channels, embed=build_pre_game_embed(m, mins, live_url))
+
+    # ── Aviso 30 min antes ──
+    if not st["announced_30"] and status == "notstarted" and 0 < (ts - now) <= 1800:
+        st["announced_30"] = True
+        mins = max(1, int((ts - now) / 60))
+        live_url = await asyncio.to_thread(youtube.get_cazetv_live, ts)
+        await _send_all(bot, channels, embed=build_pre_game_embed(m, mins, live_url))
+
+    # ── Escalação (1h antes) ──
+    if not st["lineup_sent"] and status == "notstarted" and 0 < (ts - now) <= LINEUP_WINDOW_SECS:
+        interval = LINEUP_INTERVAL_BRAZIL if is_brazil_match(m) else LINEUP_INTERVAL_OTHER
+        if (now - st["last_lineup_check"]) >= interval:
+            st["last_lineup_check"] = now
+            embed = await check_lineup(m)
+            if embed:
+                st["lineup_sent"] = True
+                for guild_id, channel_id in channels:
+                    ch = bot.get_channel(channel_id)
+                    if ch is None:
+                        continue
+                    try:
+                        await ch.send(
+                            content=(
+                                f"📋 **Escalação divulgada!** "
+                                f"{hf} {m['home_pt']} x {m['away_pt']} {af}"
+                            ),
+                            embed=embed,
+                        )
+                    except Exception:
+                        logger.exception("Erro ao enviar embed de escalação")
+
+    # ── Priming ──
+    if not st["primed"] and status == "inprogress":
+        logger.info("[priming] %s x %s (first_tick=%s)", m["home_pt"], m["away_pt"], _first_tick)
+        st["kicked_off"] = True
+        data = await asyncio.to_thread(_load_fifa_live, m["fifa_id"])
+        if data:
+            home = data.get("HomeTeam") or {}
+            away = data.get("AwayTeam") or {}
+            st["home_team_id"] = home.get("IdTeam")
+            st["away_team_id"] = away.get("IdTeam")
+            st["pmap"] = _player_map_fifa(home, away)
+            for side in (home, away):
+                for g in (side.get("Goals") or []):
+                    st["seen_goals"].add((g.get("IdPlayer"), g.get("Minute"), g.get("Period"), g.get("Type")))
+                for b in (side.get("Bookings") or []):
+                    st["seen_cards"].add((b.get("IdPlayer"), b.get("Minute"), b.get("Card")))
+            period = data.get("Period")
+            st["last_period"] = period
+            if period is not None and period > 3:
+                st["ht_sent"] = True
+            if period is not None and period >= 4:
+                st["2ht_sent"] = True
+            tl_events = await asyncio.to_thread(_load_fifa_timeline, m)
+            primed_tl = 0
+            for ev in (tl_events or []):
+                eid = ev.get("EventId")
+                etype_ev = ev.get("Type")
+                if not eid:
+                    continue
+                if etype_ev == 7:
+                    if _first_tick:
+                        st["seen_timeline_events"].add(eid)
+                        st["kickoff_notified"] = True
+                else:
+                    st["seen_timeline_events"].add(eid)
+                    primed_tl += 1
+            logger.info("[priming] concluído: gols=%d cartões=%d tl_eventos=%d",
+                        len(st["seen_goals"]), len(st["seen_cards"]), primed_tl)
+            st["primed"] = True
+        else:
+            logger.warning("[priming] live API sem dados para %s x %s", m["home_pt"], m["away_pt"])
+        return
+
+    # ── Ao vivo ──
+    if status == "inprogress":
+        logger.debug("[tick] monitorando %s x %s (primed=%s kicked_off=%s)",
+                     m["home_pt"], m["away_pt"], st["primed"], st["kicked_off"])
+        await _check_fifa_live(bot, channels, m, st)
+        await _check_fifa_timeline(bot, channels, m, st)
+
+    # ── Fim de jogo (via status finished) ──
+    if not st["final_sent"] and status == "finished" and st["kicked_off"]:
+        st["final_sent"] = True
+        h = m["home_score"] if m["home_score"] is not None else 0
+        a = m["away_score"] if m["away_score"] is not None else 0
+        data = await asyncio.to_thread(_load_fifa_live, m["fifa_id"])
+        if data:
+            await _send_all(bot, channels, embed=build_final_embed(m, h, a, data))
+        else:
+            await _send_all(
+                bot, channels,
+                content=f"🏁 **Fim de jogo!**\n**{m['home_pt']} {h}-{a} {m['away_pt']}**",
+            )
