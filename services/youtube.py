@@ -9,7 +9,7 @@ from datetime import datetime, timezone, timedelta
 
 logger = logging.getLogger(__name__)
 
-_CAZETV_CHANNEL_ID = "UCZiYbVptd3PVPf4f6eR6UaQ"
+_CAZETV_CHANNEL_ID = "UCxdoIvcr6ew6xS1aS-2ykMA"
 _YT_SEARCH = "https://www.googleapis.com/youtube/v3/search"
 _YT_VIDEOS = "https://www.googleapis.com/youtube/v3/videos"
 _BRT = timezone(timedelta(hours=-3))
