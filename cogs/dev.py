@@ -231,7 +231,7 @@ class DevCog(commands.Cog):
         if not m:
             await interaction.followup.send("❌ Nenhuma partida encontrada.", ephemeral=True)
             return
-        live_url = await asyncio.to_thread(youtube.get_cazetv_live)
+        live_url = await asyncio.to_thread(youtube.get_cazetv_live, m["date_ts"])
         live_line = f"\n📺 **Assista ao vivo:** {live_url}" if live_url else ""
         await interaction.followup.send(
             f"⏰ **Em 60 minutos!**\n⚽ {_jogo(m)}{live_line}"
@@ -245,7 +245,7 @@ class DevCog(commands.Cog):
         if not m:
             await interaction.followup.send("❌ Nenhuma partida encontrada.", ephemeral=True)
             return
-        live_url = await asyncio.to_thread(youtube.get_cazetv_live)
+        live_url = await asyncio.to_thread(youtube.get_cazetv_live, m["date_ts"])
         live_line = f"\n📺 **Assista ao vivo:** {live_url}" if live_url else ""
         await interaction.followup.send(
             f"⏰ **Em 30 minutos!**\n⚽ {_jogo(m)}{live_line}"

@@ -327,7 +327,7 @@ async def run_monitor_tick(bot: discord.Client, channels: list[tuple[int, int]])
         if not st["announced_60"] and status == "notstarted" and 1800 < (ts - now) <= 3600:
             st["announced_60"] = True
             mins = max(1, int((ts - now) / 60))
-            live_url = await asyncio.to_thread(youtube.get_cazetv_live)
+            live_url = await asyncio.to_thread(youtube.get_cazetv_live, ts)
             live_line = f"\n📺 **Assista ao vivo:** {live_url}" if live_url else ""
             await _send_all(
                 bot, channels,
@@ -342,7 +342,7 @@ async def run_monitor_tick(bot: discord.Client, channels: list[tuple[int, int]])
         if not st["announced_30"] and status == "notstarted" and 0 < (ts - now) <= 1800:
             st["announced_30"] = True
             mins = max(1, int((ts - now) / 60))
-            live_url = await asyncio.to_thread(youtube.get_cazetv_live)
+            live_url = await asyncio.to_thread(youtube.get_cazetv_live, ts)
             live_line = f"\n📺 **Assista ao vivo:** {live_url}" if live_url else ""
             await _send_all(
                 bot, channels,
