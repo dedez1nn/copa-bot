@@ -69,6 +69,9 @@ def _state(key: str) -> dict:
             "kickoff_notified": False,
             "h_score": 0,
             "a_score": 0,
+            "shootout_announced": False,
+            "shootout_home": 0,
+            "shootout_away": 0,
         }
     return _watch[key]
 
@@ -76,7 +79,11 @@ def _state(key: str) -> dict:
 # ── Formatadores de seção ─────────────────────────────────────────────────────
 
 def _goals_text(goals_raw: list[tuple[str, dict]], pmap: dict, period: int | None = None) -> str:
-    filtered = [(t, g) for t, g in goals_raw if period is None or g.get("Period") == period]
+    # Period 11 = pênaltis convertidos na disputa; não entram na lista de gols do jogo.
+    filtered = [
+        (t, g) for t, g in goals_raw
+        if g.get("Period") != 11 and (period is None or g.get("Period") == period)
+    ]
     if not filtered:
         return ""
     lines = []
@@ -434,6 +441,11 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
         if gkey in st["seen_goals"]:
             continue
         pid, _gmin, period, gtype = gkey
+        # Pênaltis convertidos na disputa (Period 11) são anunciados pela timeline
+        # (Type 41) com placar próprio — aqui só registramos para não notificar como gol.
+        if period == 11:
+            st["seen_goals"].add(gkey)
+            continue
         side = "home" if team_pt == home_pt else "away"
         same_identity = any(_same_goal(k, pid, period, gtype) for k in st["seen_goals"])
         increased = cur_counts[side] > prev_counts.get(side, 0)
@@ -547,6 +559,20 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
             st["2ht_sent"] = True
             await _send_all(bot, channels, embed=build_2ht_embed(m, h_score, a_score, data))
 
+        if period == 11 and not st["shootout_announced"]:
+            st["shootout_announced"] = True
+            await _send_all(
+                bot, channels,
+                embed=discord.Embed(
+                    title="🥅 Disputa de Pênaltis",
+                    description=(
+                        "**DAMAS E CABALLEROS, DEVO INFORMAR-LHES QUE TEREMOS "
+                        "DECISION DE PENAL**"
+                    ),
+                    color=0xFFD700,
+                ),
+            )
+
         st["last_period"] = period
 
     st["h_score"] = h_score
@@ -572,7 +598,8 @@ _TL_TYPE_NAMES: dict[int, str] = {
     1: "Assistência", 2: "Amarelo", 3: "Vermelho", 5: "Substituição",
     6: "Pênalti", 7: "Kickoff", 8: "Fim período", 12: "Chute a gol",
     15: "Impedimento", 16: "Escanteio", 18: "Falta", 26: "Fim de jogo",
-    34: "Gol contra", 57: "Gol evitado", 71: "VAR", 78: "Reinício",
+    34: "Gol contra", 41: "Pênalti convertido", 57: "Gol evitado",
+    60: "Pênalti perdido", 71: "VAR", 78: "Reinício",
     79: "Cara ou coroa", 83: "Atraso",
 }
 
@@ -675,6 +702,21 @@ async def _check_fifa_timeline(bot, channels, m: dict, st: dict) -> None:
 
         elif etype == 6:  # Pênalti marcado (árbitro)
             await _send_event(f"🎯 **Pênalti!** {team_flag} **{team_name}** — {minute}'")
+
+        elif etype in (41, 60):  # Disputa de pênaltis: 41=convertido, 60=defendido/perdido
+            player = pmap.get(player_id, "") if player_id else ""
+            is_home = bool(team_id) and team_id == st.get("home_team_id")
+            if etype == 41:
+                st["shootout_home" if is_home else "shootout_away"] += 1
+            sh = st.get("shootout_home", 0)
+            sa = st.get("shootout_away", 0)
+            quem = f"**{player}**" if player else f"{team_flag} **{team_name}**"
+            emoji = "🟢" if etype == 41 else "❌"
+            verbo = "converteu" if etype == 41 else "perdeu"
+            placar = f"**{m['home_pt']} {sh} — {sa} {m['away_pt']}** *(pênaltis)*"
+            await _send_event(
+                f"{emoji} **Pênalti** — {quem} {verbo}! ({team_flag} {team_name})\n{placar}"
+            )
 
         elif etype == 12:  # Chute a gol
             player = pmap.get(player_id, "") if player_id else ""
@@ -876,6 +918,13 @@ async def _tick_match(bot, channels, m: dict, now: float) -> None:
                 st["ht_sent"] = True
             if period is not None and period >= 4:
                 st["2ht_sent"] = True
+            if period == 11:
+                # Reinício durante a disputa: já anunciada e placar reconstruído.
+                st["shootout_announced"] = True
+                st["shootout_home"] = sum(
+                    1 for g in (home.get("Goals") or []) if g.get("Period") == 11)
+                st["shootout_away"] = sum(
+                    1 for g in (away.get("Goals") or []) if g.get("Period") == 11)
             tl_events = await asyncio.to_thread(_load_fifa_timeline, m)
             primed_tl = 0
             for ev in (tl_events or []):
