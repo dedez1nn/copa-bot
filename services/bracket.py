@@ -14,15 +14,11 @@ import time
 import unicodedata
 from pathlib import Path
 
-from services import copa as copa_svc
 from services.copa import (
     EN_TO_PT, PT_TO_EN, CACHE_DIR, _load_fifa_matches, _get_fifa, _norm,
 )
 
 logger = logging.getLogger(__name__)
-
-# Overrides de simulação (apenas para teste via /avancar): {MatchNumber: IdTeam vencedor}
-_overrides: dict[int, str] = {}
 
 # IdStage → (sigla, ordem da rodada). 289291 (3º lugar) é excluído de propósito.
 KO_STAGES: dict[int, tuple[str, int]] = {
@@ -113,10 +109,6 @@ def build_nodes() -> dict[int, dict]:
             "status": m.get("MatchStatus"),
             "date_ts": _parse_ts(m.get("Date")),
         }
-    # Aplica overrides de simulação (vencedores forçados via /avancar)
-    for num, winner_id in _overrides.items():
-        if num in nodes:
-            nodes[num]["winner_id"] = winner_id
     return nodes
 
 
@@ -129,20 +121,6 @@ def _parse_ts(s: str | None) -> int:
                    .replace(tzinfo=timezone.utc).timestamp())
     except Exception:
         return 0
-
-
-def state_signature(nodes: dict[int, dict] | None = None) -> str:
-    """Assinatura do estado do chaveamento (muda quando avança um confronto)."""
-    if nodes is None:
-        nodes = build_nodes()
-    parts = []
-    for num in sorted(nodes):
-        n = nodes[num]
-        h = n["home"]["id"] if n["home"] else "-"
-        a = n["away"]["id"] if n["away"] else "-"
-        parts.append(f"{num}:{h}:{a}:{n.get('winner_id') or '-'}:"
-                     f"{(n['home'] or {}).get('score')}-{(n['away'] or {}).get('score')}")
-    return "|".join(parts)
 
 
 def children(nodes: dict[int, dict], num: int) -> list[int]:
@@ -452,69 +430,3 @@ def _draw_box(img, draw, node, nodes, xy, fonts):
             sw = draw.textlength(score_txt, font=f_score)
             draw.text((x + _BOX_W - 10 - sw, ry - 8), score_txt, font=f_score,
                       fill=_WIN if is_winner else _WHITE)
-
-
-
-# ── Simulação de avanço (teste) ───────────────────────────────────────────────
-
-def _find_team_id(nodes: dict[int, dict], query: str) -> tuple[str, str] | None:
-    """Resolve um nome de seleção para (IdTeam, nome_pt) varrendo o chaveamento."""
-    en = copa_svc._resolve(query)
-    qn = _norm(query)
-    for node in nodes.values():
-        for team in (node["home"], node["away"]):
-            if not team:
-                continue
-            if team["en"] == en or _norm(team["pt"]) == _norm(EN_TO_PT.get(en, en)):
-                return team["id"], team["pt"]
-    # fallback: casamento parcial por nome
-    for node in nodes.values():
-        for team in (node["home"], node["away"]):
-            if team and (qn in _norm(team["pt"]) or _norm(team["pt"]) in qn):
-                return team["id"], team["pt"]
-    return None
-
-
-def _current_match(nodes: dict[int, dict], team_id: str) -> int | None:
-    """Confronto indefinido mais próximo (rodada mais baixa) em que a seleção está."""
-    for order in (1, 2, 3, 4, 5):
-        for num, node in nodes.items():
-            if node["order"] != order or node.get("winner_id"):
-                continue
-            for sd in ("A", "B"):
-                team, _ = slot_text(nodes, num, sd)
-                if team and team["id"] == team_id:
-                    return num
-    return None
-
-
-def advance_team(query: str) -> tuple[bool, str]:
-    """Avança uma seleção uma rodada no chaveamento simulado (override em memória)."""
-    nodes = build_nodes()
-    found = _find_team_id(nodes, query)
-    if not found:
-        return False, f"❌ Seleção **{query}** não encontrada no chaveamento."
-    team_id, pt = found
-
-    # Já é campeã?
-    final = nodes.get(104)
-    if final and final.get("winner_id") == team_id:
-        return False, f"🏆 **{pt}** já é campeã da simulação. Use `/avancar-reset` para recomeçar."
-
-    num = _current_match(nodes, team_id)
-    if num is None:
-        return False, (f"🚫 **{pt}** não está mais no chaveamento "
-                       f"(foi eliminada ou ainda não se classificou).")
-
-    _overrides[num] = team_id
-    node = nodes[num]
-    next_label = "campeã 🏆" if node["order"] == 5 else ROUND_LABELS.get(
-        {1: "R16", 2: "QF", 3: "SF", 4: "F"}.get(node["order"]), "próxima fase")
-    if node["order"] == 5:
-        return True, f"🏆 **{pt}** venceu a final e é a **campeã** da simulação!"
-    return True, f"✅ **{pt}** avançou para **{next_label}** (venceu o confronto #{num})."
-
-
-def reset_overrides() -> None:
-    """Limpa a simulação de avanço, voltando ao estado real da API."""
-    _overrides.clear()

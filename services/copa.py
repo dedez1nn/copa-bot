@@ -143,23 +143,44 @@ def _norm(s: str) -> str:
     return unicodedata.normalize("NFD", s.lower()).encode("ascii", "ignore").decode()
 
 
+FIFA_RETRIES = 3                 # tentativas para falhas transitórias (rede/DNS/timeout)
+FIFA_BACKOFF = (0.5, 1.5)        # espera (s) entre tentativas
+
+
 def _get_fifa(url: str, timeout: int = 8) -> dict | None:
-    try:
-        req = urllib.request.Request(
-            url, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read())
-    except urllib.error.HTTPError as e:
-        logger.warning("[fifa] HTTP %s ao acessar %s", e.code, url)
-    except urllib.error.URLError as e:
-        logger.warning("[fifa] erro de rede ao acessar %s: %s", url, e.reason)
-    except TimeoutError:
-        logger.warning("[fifa] timeout ao acessar %s", url)
-    except json.JSONDecodeError as e:
-        logger.warning("[fifa] JSON inválido em %s: %s", url, e)
-    except Exception as e:
-        logger.warning("[fifa] erro inesperado em %s: %s", url, e)
+    for attempt in range(1, FIFA_RETRIES + 1):
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            # Erro do servidor — só vale repetir em 5xx; 4xx não recupera.
+            if e.code >= 500 and attempt < FIFA_RETRIES:
+                logger.warning("[fifa] HTTP %s em %s (tentativa %d/%d)",
+                               e.code, url, attempt, FIFA_RETRIES)
+                time.sleep(FIFA_BACKOFF[min(attempt - 1, len(FIFA_BACKOFF) - 1)])
+                continue
+            logger.warning("[fifa] HTTP %s ao acessar %s", e.code, url)
+            return None
+        except (urllib.error.URLError, TimeoutError) as e:
+            # Falha transitória (DNS, rede, timeout) — repete com backoff.
+            reason = getattr(e, "reason", e)
+            if attempt < FIFA_RETRIES:
+                logger.warning("[fifa] rede/timeout em %s: %s (tentativa %d/%d)",
+                               url, reason, attempt, FIFA_RETRIES)
+                time.sleep(FIFA_BACKOFF[min(attempt - 1, len(FIFA_BACKOFF) - 1)])
+                continue
+            logger.warning("[fifa] rede/timeout em %s: %s (desistindo após %d tentativas)",
+                           url, reason, FIFA_RETRIES)
+            return None
+        except json.JSONDecodeError as e:
+            logger.warning("[fifa] JSON inválido em %s: %s", url, e)
+            return None
+        except Exception as e:
+            logger.warning("[fifa] erro inesperado em %s: %s", url, e)
+            return None
     return None
 
 
@@ -372,6 +393,17 @@ def get_jogos_hoje() -> list[dict]:
         if m["status"] == "notstarted"
         and datetime.fromtimestamp(m["date_ts"], tz=BRT).date() == hoje
     ]
+
+
+def get_jogos_do_dia() -> list[dict]:
+    """Todos os jogos cuja data (BRT) é hoje, em qualquer status."""
+    _refresh_cache()
+    hoje = datetime.fromtimestamp(time.time(), tz=BRT).date()
+    return sorted(
+        [m for m in (_matches_cache or [])
+         if datetime.fromtimestamp(m["date_ts"], tz=BRT).date() == hoje],
+        key=lambda m: m["date_ts"],
+    )
 
 
 def get_vs_match(t1q: str, t2q: str) -> list[dict]:

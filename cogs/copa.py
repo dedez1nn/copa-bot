@@ -1,6 +1,7 @@
 """Cog Copa — comandos + monitoramento ao vivo."""
 
 import asyncio
+import io
 import logging
 import math
 import time
@@ -10,8 +11,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-import time
-
+from services import bracket
 from services import copa as copa_svc
 from services import copa_monitor as monitor
 from services import gate
@@ -21,6 +21,8 @@ from services.db import get_all_copa_channels, get_copa_channel, set_copa_channe
 logger = logging.getLogger(__name__)
 
 BRT = copa_svc.BRT
+
+BRACKET_EOD_DELAY_SECS = 3600  # chaveamento postado 1h após o fim do último jogo do dia
 
 
 def _score_str(m: dict) -> str:
@@ -200,6 +202,11 @@ class CopaCog(commands.Cog):
         self.bot = bot
         self._monitor_channels: list[tuple[int, int]] = []
         self._daily_sent_date: str = ""
+        # Chaveamento de fim de dia: arma quando todos os jogos do dia acabam,
+        # dispara 1h depois. Guardado por data para enviar só uma vez por dia.
+        self._eod_armed_date: str = ""
+        self._eod_due_ts: float = 0.0
+        self._eod_sent_dates: set[str] = set()
 
     async def cog_load(self) -> None:
         self._monitor_channels = await get_all_copa_channels()
@@ -213,6 +220,7 @@ class CopaCog(commands.Cog):
         try:
             await monitor.run_monitor_tick(self.bot, self._monitor_channels)
             await self._check_daily_summary()
+            await self._check_end_of_day_bracket()
         except Exception:
             logger.exception("Erro no loop de monitoramento (tick ignorado)")
 
@@ -243,13 +251,79 @@ class CopaCog(commands.Cog):
             return
 
         embed = _embed_resumo_diario(jogos, datetime.now(BRT))
+        # Anexa o chaveamento atual ao resumo do dia, quando possível.
+        png = await self._render_bracket()
         for guild_id, channel_id in self._monitor_channels:
             ch = self.bot.get_channel(channel_id)
-            if ch:
-                try:
+            if not ch:
+                continue
+            try:
+                if png is not None:
+                    await ch.send(embed=embed,
+                                  file=discord.File(io.BytesIO(png), filename="chaveamento.png"))
+                else:
                     await ch.send(embed=embed)
+            except Exception:
+                logger.exception("Erro ao enviar resumo diário para guild %s", guild_id)
+
+    async def _render_bracket(self) -> bytes | None:
+        """Gera o PNG do chaveamento (ou None em caso de falha)."""
+        try:
+            return await asyncio.to_thread(bracket.render_bracket_png)
+        except Exception:
+            logger.exception("Erro ao gerar imagem do chaveamento")
+            return None
+
+    async def _check_end_of_day_bracket(self) -> None:
+        """Envia o chaveamento ~1h após o fim do último jogo do dia (1x por dia)."""
+        now = time.time()
+        # Já armado: aguarda o atraso de 1h e dispara uma vez.
+        if self._eod_armed_date:
+            if now < self._eod_due_ts:
+                return
+            date = self._eod_armed_date
+            self._eod_armed_date = ""
+            if date in self._eod_sent_dates:
+                return
+            self._eod_sent_dates.add(date)
+            png = await self._render_bracket()
+            if png is None:
+                return
+            embed = discord.Embed(
+                title="🗺️ Chaveamento — Fim dos jogos do dia",
+                description="Situação atual do mata-mata.",
+                color=0xFFCD46,
+            )
+            embed.set_image(url="attachment://chaveamento.png")
+            embed.set_footer(text="Copa do Mundo FIFA™ 2026")
+            embed.timestamp = discord.utils.utcnow()
+            for guild_id, channel_id in self._monitor_channels:
+                ch = self.bot.get_channel(channel_id)
+                if not ch:
+                    continue
+                try:
+                    await ch.send(embed=embed,
+                                  file=discord.File(io.BytesIO(png), filename="chaveamento.png"))
                 except Exception:
-                    logger.exception("Erro ao enviar resumo diário para guild %s", guild_id)
+                    logger.exception("Erro ao enviar chaveamento de fim de dia para guild %s", guild_id)
+            return
+
+        # Não armado: arma quando todos os jogos de hoje estiverem encerrados.
+        today = datetime.now(BRT).strftime("%Y-%m-%d")
+        if today in self._eod_sent_dates:
+            return
+        try:
+            jogos = await asyncio.to_thread(copa_svc.get_jogos_do_dia)
+        except Exception:
+            logger.exception("Erro ao buscar jogos do dia (fim de dia)")
+            return
+        if not jogos:
+            return
+        if all(j["status"] == "finished" for j in jogos):
+            self._eod_armed_date = today
+            self._eod_due_ts = now + BRACKET_EOD_DELAY_SECS
+            logger.info("[bracket] todos os %d jogos de %s encerrados — chaveamento em +1h",
+                        len(jogos), today)
 
     # ── Slash commands ────────────────────────────────────────────────────────
 

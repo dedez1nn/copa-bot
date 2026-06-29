@@ -7,27 +7,22 @@ from datetime import datetime
 
 import discord
 
-import io
-
 from services.copa import (
     BRT, EN_TO_PT, FLAGS,
     _load_fifa_live, _load_fifa_timeline, _player_map_fifa,
     get_jogos_rodada, is_brazil_match, flag, team_color,
 )
 from services import youtube
-from services import bracket
 
 logger = logging.getLogger(__name__)
 
 _watch: dict[str, dict] = {}
 _first_tick = True
-_last_bracket_sig: str | None = None
 
 LINEUP_INTERVAL_BRAZIL = 10
 LINEUP_INTERVAL_OTHER = 60
 LINEUP_WINDOW_SECS = 3600
 VAR_WINDOW_SECS = 600
-BRACKET_DELAY_SECS = 3600  # chaveamento postado ~1h após o fim de cada jogo
 
 _POS_FIFA = {0: "GK", 1: "DEF", 2: "MEI", 3: "ATA"}
 
@@ -61,6 +56,8 @@ def _state(key: str) -> dict:
             "last_period": None,
             "seen_goals": set(),
             "seen_cards": set(),
+            "seen_red_players": set(),
+            "goal_count": {"home": 0, "away": 0},
             "last_status": None,
             "suspended": False,
             "pending_goals": {},
@@ -72,9 +69,6 @@ def _state(key: str) -> dict:
             "kickoff_notified": False,
             "h_score": 0,
             "a_score": 0,
-            "bracket_due_ts": None,
-            "bracket_sent": False,
-            "bracket_label": "",
         }
     return _watch[key]
 
@@ -369,69 +363,6 @@ def _event_embed(msg: str, team_en: str) -> discord.Embed:
     return discord.Embed(description=msg, color=team_color(team_en))
 
 
-def _schedule_bracket(st: dict, m: dict) -> None:
-    """Agenda o envio do chaveamento ~1h após o fim do jogo (apenas mata-mata)."""
-    if st.get("bracket_sent") or st.get("bracket_due_ts"):
-        return
-    st["bracket_due_ts"] = time.time() + BRACKET_DELAY_SECS
-    st["bracket_label"] = f"{m['home_pt']} x {m['away_pt']}"
-    logger.info("[bracket] agendado para +1h após %s", st["bracket_label"])
-
-
-async def _send_bracket(bot: discord.Client, channels: list[tuple[int, int]], label: str) -> None:
-    try:
-        png = await asyncio.to_thread(bracket.render_bracket_png)
-    except Exception:
-        logger.exception("[bracket] falha ao gerar imagem do chaveamento")
-        return
-    embed = discord.Embed(
-        title="🗺️ Chaveamento atualizado",
-        description=f"Situação do mata-mata após **{label}**." if label else "Situação do mata-mata.",
-        color=0xFFCD46,
-    )
-    embed.set_image(url="attachment://chaveamento.png")
-    embed.set_footer(text="Copa do Mundo FIFA™ 2026")
-    embed.timestamp = discord.utils.utcnow()
-    for guild_id, channel_id in channels:
-        ch = bot.get_channel(channel_id)
-        if ch is None:
-            continue
-        try:
-            await ch.send(
-                embed=embed,
-                file=discord.File(io.BytesIO(png), filename="chaveamento.png"),
-            )
-        except Exception:
-            logger.exception("[bracket] falha ao enviar para canal %s (guild %s)", channel_id, guild_id)
-
-
-async def _check_due_brackets(bot: discord.Client, channels: list[tuple[int, int]]) -> None:
-    """Envia chaveamentos cujo atraso de 1h já expirou (um por jogo encerrado).
-
-    Só posta se o chaveamento mudou desde o último envio — evita repetir a mesma
-    imagem na fase de grupos, quando o mata-mata ainda não avançou.
-    """
-    global _last_bracket_sig
-    now = time.time()
-    for st in _watch.values():
-        due = st.get("bracket_due_ts")
-        if not (due and not st.get("bracket_sent") and now >= due):
-            continue
-        st["bracket_sent"] = True
-        st["bracket_due_ts"] = None
-        try:
-            sig = await asyncio.to_thread(bracket.state_signature)
-        except Exception:
-            logger.exception("[bracket] falha ao calcular assinatura — enviando mesmo assim")
-            sig = None
-        if sig is not None and sig == _last_bracket_sig:
-            logger.info("[bracket] chaveamento inalterado desde o último envio — pulando %s",
-                        st.get("bracket_label", ""))
-            continue
-        _last_bracket_sig = sig
-        await _send_bracket(bot, channels, st.get("bracket_label", ""))
-
-
 # ── Verificação ao vivo via FIFA ──────────────────────────────────────────────
 
 async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
@@ -469,6 +400,9 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
                 st["seen_goals"].add((g.get("IdPlayer"), g.get("Minute"), g.get("Period"), g.get("Type")))
             for b in (side.get("Bookings") or []):
                 st["seen_cards"].add((b.get("IdPlayer"), b.get("Minute"), b.get("Card")))
+                if b.get("Card") == 2:
+                    st["seen_red_players"].add(b.get("IdPlayer"))
+        st["goal_count"] = {"home": len(home.get("Goals") or []), "away": len(away.get("Goals") or [])}
         st["last_period"] = period
         if period is not None and period > 3:
             st["ht_sent"] = True
@@ -476,37 +410,54 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
             st["2ht_sent"] = True
         return
 
-    all_goals_raw = [(home_pt, g) for g in (home.get("Goals") or [])] + \
-                    [(away_pt, g) for g in (away.get("Goals") or [])]
+    home_goals = home.get("Goals") or []
+    away_goals = away.get("Goals") or []
+    all_goals_raw = [(home_pt, g) for g in home_goals] + [(away_pt, g) for g in away_goals]
     current_goal_keys: set = {
         (g.get("IdPlayer"), g.get("Minute"), g.get("Period"), g.get("Type"))
         for _, g in all_goals_raw
     }
+    cur_counts = {"home": len(home_goals), "away": len(away_goals)}
+    prev_counts = st["goal_count"]
 
     all_cards_raw = [(home_pt, b) for b in (home.get("Bookings") or [])] + \
                     [(away_pt, b) for b in (away.get("Bookings") or [])]
-    current_red_keys: set = {
-        (b.get("IdPlayer"), b.get("Minute"), b.get("Card"))
-        for _, b in all_cards_raw if b.get("Card") == 2
-    }
+    current_red_players: set = {b.get("IdPlayer") for _, b in all_cards_raw if b.get("Card") == 2}
+    current_yellow_players: set = {b.get("IdPlayer") for _, b in all_cards_raw if b.get("Card") == 1}
+
+    def _same_goal(k, pid, period, gtype):
+        return k[0] == pid and k[2] == period and k[3] == gtype
 
     # -- novos gols --
     for team_pt, g in all_goals_raw:
         gkey = (g.get("IdPlayer"), g.get("Minute"), g.get("Period"), g.get("Type"))
         if gkey in st["seen_goals"]:
             continue
+        pid, _gmin, period, gtype = gkey
+        side = "home" if team_pt == home_pt else "away"
+        same_identity = any(_same_goal(k, pid, period, gtype) for k in st["seen_goals"])
+        increased = cur_counts[side] > prev_counts.get(side, 0)
+        # Mesmo jogador/período/tipo já visto e o total não subiu → correção de dado
+        # (minuto reajustado), não um gol novo. Registra sem notificar e migra o pending.
+        if same_identity and not increased:
+            st["seen_goals"].add(gkey)
+            for pk in list(st["pending_goals"]):
+                if pk not in current_goal_keys and _same_goal(pk, pid, period, gtype):
+                    st["pending_goals"][gkey] = st["pending_goals"].pop(pk)
+                    break
+            logger.info("[live] correção de gol (re-key) ignorada: %s %s", team_pt, gkey)
+            continue
         logger.info("[live] novo gol detectado: %s %s", team_pt, gkey)
         st["seen_goals"].add(gkey)
-        player = pmap.get(str(g.get("IdPlayer") or ""), "?")
+        player = pmap.get(str(pid or ""), "?")
         minute = g.get("Minute", "?")
-        gtype = g.get("Type", 2)
         extra = " (contra)" if gtype == 3 else (" (pen)" if gtype == 4 else "")
         st["pending_goals"][gkey] = {
             "ts": time.time(), "player": player, "team_pt": team_pt,
-            "minute": minute, "extra": extra,
-            "score_at_announce": (h_score, a_score),
+            "minute": minute, "extra": extra, "side": side,
+            "team_score_at_announce": cur_counts[side],
         }
-        team_en_scorer = m["home_en"] if team_pt == home_pt else m["away_en"]
+        team_en_scorer = m["home_en"] if side == "home" else m["away_en"]
         await _send_all(
             bot, channels,
             embed=_event_embed(
@@ -516,18 +467,18 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
             ),
         )
 
-    # -- novos cartões vermelhos --
+    # -- novos cartões vermelhos (dedup por jogador: cada um leva no máx. 1) --
     for team_pt, b in all_cards_raw:
-        ckey = (b.get("IdPlayer"), b.get("Minute"), b.get("Card"))
-        if ckey in st["seen_cards"]:
-            continue
-        st["seen_cards"].add(ckey)
         if b.get("Card") != 2:
             continue
-        logger.info("[live] vermelho detectado: %s %s", team_pt, ckey)
-        player = pmap.get(str(b.get("IdPlayer") or ""), "?")
+        pid = b.get("IdPlayer")
+        if pid in st["seen_red_players"]:
+            continue
+        st["seen_red_players"].add(pid)
+        logger.info("[live] vermelho detectado: %s jogador=%s", team_pt, pid)
+        player = pmap.get(str(pid or ""), "?")
         minute = b.get("Minute", "?")
-        st["pending_cards"][ckey] = {
+        st["pending_cards"][pid] = {
             "ts": time.time(), "player": player, "team_pt": team_pt, "minute": minute,
         }
         team_en_card = m["home_en"] if team_pt == home_pt else m["away_en"]
@@ -537,39 +488,52 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
     # -- VAR: gol removido --
     now_var = time.time()
     for gkey, info in list(st["pending_goals"].items()):
-        if gkey not in current_goal_keys:
-            del st["pending_goals"][gkey]
-            prev_h, prev_a = info.get("score_at_announce", (None, None))
-            if (prev_h, prev_a) == (h_score, a_score):
-                continue
-            team_en_var = m["home_en"] if info["team_pt"] == home_pt else m["away_en"]
-            await _send_all(
-                bot, channels,
-                embed=_event_embed(
-                    f"🚫 **Gol anulado pelo VAR!** {info['player']}{info['extra']} "
-                    f"({info['team_pt']}) — {info['minute']}'\n"
-                    f"**{home_pt} {h_score}-{a_score} {away_pt}**",
-                    team_en_var,
-                ),
-            )
-        elif now_var - info["ts"] >= VAR_WINDOW_SECS:
-            del st["pending_goals"][gkey]
+        if gkey in current_goal_keys:
+            if now_var - info["ts"] >= VAR_WINDOW_SECS:
+                del st["pending_goals"][gkey]
+            continue
+        # gol sumiu da API
+        del st["pending_goals"][gkey]
+        pid, _gmin, period, gtype = gkey
+        replacement = next((k for k in current_goal_keys if _same_goal(k, pid, period, gtype)), None)
+        if replacement:
+            # mesmo gol com minuto/dado corrigido — segue valendo, sem anular
+            st["seen_goals"].add(replacement)
+            continue
+        # confirma anulação só se o placar do time realmente caiu
+        if cur_counts[info["side"]] >= info["team_score_at_announce"]:
+            logger.info("[live] gol removido sem queda de placar — ignorado: %s", gkey)
+            continue
+        team_en_var = m["home_en"] if info["side"] == "home" else m["away_en"]
+        await _send_all(
+            bot, channels,
+            embed=_event_embed(
+                f"🚫 **Gol anulado pelo VAR!** {info['player']}{info['extra']} "
+                f"({info['team_pt']}) — {info['minute']}'\n"
+                f"**{home_pt} {h_score}-{a_score} {away_pt}**",
+                team_en_var,
+            ),
+        )
 
-    # -- VAR: vermelho revertido --
-    for ckey, info in list(st["pending_cards"].items()):
-        if ckey not in current_red_keys:
-            del st["pending_cards"][ckey]
-            team_en_var = m["home_en"] if info["team_pt"] == home_pt else m["away_en"]
-            await _send_all(
-                bot, channels,
-                embed=_event_embed(
-                    f"🟨 **Vermelho revertido pelo VAR!** {info['player']} "
-                    f"({info['team_pt']}) — {info['minute']}'",
-                    team_en_var,
-                ),
-            )
-        elif now_var - info["ts"] >= VAR_WINDOW_SECS:
-            del st["pending_cards"][ckey]
+    # -- VAR: vermelho revertido / revisto para amarelo --
+    for pid, info in list(st["pending_cards"].items()):
+        if pid in current_red_players:
+            if now_var - info["ts"] >= VAR_WINDOW_SECS:
+                del st["pending_cards"][pid]
+            continue
+        # o vermelho desse jogador sumiu da API
+        del st["pending_cards"][pid]
+        st["seen_red_players"].discard(pid)
+        team_en_var = m["home_en"] if info["team_pt"] == home_pt else m["away_en"]
+        if pid in current_yellow_players:
+            msg = (f"🟨 **Vermelho revisto para amarelo pelo VAR!** {info['player']} "
+                   f"({info['team_pt']}) — {info['minute']}'")
+        else:
+            msg = (f"↩️ **Vermelho revertido pelo VAR!** {info['player']} "
+                   f"({info['team_pt']}) — {info['minute']}'")
+        await _send_all(bot, channels, embed=_event_embed(msg, team_en_var))
+
+    st["goal_count"] = cur_counts
 
     # -- transições de período --
     last = st["last_period"]
@@ -591,7 +555,6 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
     if not st["final_sent"] and match_status == 0 and st["kicked_off"]:
         st["final_sent"] = True
         await _send_all(bot, channels, embed=build_final_embed(m, h_score, a_score, data))
-        _schedule_bracket(st, m)
 
 
 # ── Verificação de timeline ───────────────────────────────────────────────────
@@ -812,8 +775,6 @@ async def run_monitor_tick(bot: discord.Client, channels: list[tuple[int, int]])
             logger.exception("[tick] erro ao processar %s x %s — ignorado neste tick",
                              m.get("home_pt"), m.get("away_pt"))
 
-    await _check_due_brackets(bot, channels)
-
     _first_tick = False
 
 
@@ -906,6 +867,9 @@ async def _tick_match(bot, channels, m: dict, now: float) -> None:
                     st["seen_goals"].add((g.get("IdPlayer"), g.get("Minute"), g.get("Period"), g.get("Type")))
                 for b in (side.get("Bookings") or []):
                     st["seen_cards"].add((b.get("IdPlayer"), b.get("Minute"), b.get("Card")))
+                    if b.get("Card") == 2:
+                        st["seen_red_players"].add(b.get("IdPlayer"))
+            st["goal_count"] = {"home": len(home.get("Goals") or []), "away": len(away.get("Goals") or [])}
             period = data.get("Period")
             st["last_period"] = period
             if period is not None and period > 3:
@@ -957,4 +921,3 @@ async def _tick_match(bot, channels, m: dict, now: float) -> None:
                     color=0x2C3E50,
                 ),
             )
-        _schedule_bracket(st, m)

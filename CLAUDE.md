@@ -9,7 +9,6 @@ main.py              — entry point, registra cogs, sincroniza slash commands
 cogs/copa.py         — comandos públicos da Copa + loop de monitoramento
 cogs/selfbot_trap.py — detecção e kick automático de selfbots
 cogs/fenrir.py       — configuração de canal único de comandos (/canal-fenrir)
-cogs/dev.py          — comandos de teste de embed (admin only, dados falsos)
 services/copa.py     — acesso à FIFA API, cache em disco, parsing de partidas
 services/copa_monitor.py — lógica ao vivo: gols, cartões, VAR, escalações, períodos
 services/bracket.py  — chaveamento do mata-mata (R32→Final): dados + imagem PNG (Pillow)
@@ -52,10 +51,16 @@ Envia apenas uma vez por partida (`lineup_sent = True`).
 **Resumo diário**: dispara uma vez por dia às 09:00 BRT via verificação no loop de 10s
 com guard `_daily_sent_date`.
 
-**Chaveamento pós-jogo**: ao fim de cada partida o monitor agenda o envio da imagem do
-mata-mata para ~1h depois (`BRACKET_DELAY_SECS`). `_check_due_brackets` só posta se a
-assinatura do chaveamento (`bracket.state_signature`) mudou desde o último envio — evita
-repetir a mesma imagem na fase de grupos.
+**Chaveamento (imagem PNG)**: enviado pelo `CopaCog` em dois momentos —
+(1) anexado ao resumo diário das 09:00 BRT, e (2) `_check_end_of_day_bracket`: ao detectar
+que **todos** os jogos do dia (`get_jogos_do_dia`) terminaram, arma um timer e posta a imagem
+1h depois (`BRACKET_EOD_DELAY_SECS`), uma vez por dia (`_eod_sent_dates`).
+
+**Revisão de VAR** (`_check_fifa_live`): gols deduplicados por `(jogador, minuto, período, tipo)`;
+correção de minuto (mesmo jogador/período/tipo sem aumento na contagem de gols do time) é
+ignorada — não duplica nem anula. Anulação só é confirmada quando o gol some **e** a contagem
+de gols do time cai. Vermelhos deduplicados por jogador (`seen_red_players`); se o vermelho
+some e o jogador passa a ter amarelo → "revisto para amarelo", senão → "revertido".
 
 **Gate de canal** (`services/gate.py`): carregado no boot por `FenrirCog.cog_load`.
 Comandos públicos chamam `gate.allowed(interaction)` antes de `defer()`.
