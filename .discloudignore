@@ -1,0 +1,31 @@
+# Ambiente / caches
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.cache/
+
+# Segredos / variáveis locais
+.env
+*.env
+
+# Editores / IDEs
+.idea/
+.vscode/
+
+# Git
+.git/
+.gitignore
+
+# Testes e documentação (não usados em runtime)
+tests/
+CLAUDE.md
+
+# Logs e bancos locais
+*.log
+*.db
+*.sqlite3
