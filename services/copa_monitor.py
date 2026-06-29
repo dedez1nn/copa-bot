@@ -257,11 +257,20 @@ def build_final_embed(m: dict, h_score: int, a_score: int, data: dict) -> discor
     all_cards = [(home_pt, b) for b in (home_data.get("Bookings") or [])] + \
                 [(away_pt, b) for b in (away_data.get("Bookings") or [])]
 
+    # Disputa de pênaltis: gols de Period 11 = pênaltis convertidos na decisão.
+    h_pen = sum(1 for g in (home_data.get("Goals") or []) if g.get("Period") == 11)
+    a_pen = sum(1 for g in (away_data.get("Goals") or []) if g.get("Period") == 11)
+    has_shootout = bool(h_pen or a_pen)
+
     is_brazil = is_brazil_match(m)
     if is_brazil:
-        br_score = h_score if m["home_en"] == "brazil" else a_score
-        op_score = a_score if m["home_en"] == "brazil" else h_score
-        color = 0x009C3B if br_score > op_score else (0xFFD700 if br_score == op_score else 0xE8473F)
+        br_h, br_a = (h_score, a_score) if m["home_en"] == "brazil" else (a_score, h_score)
+        br_p, op_p = (h_pen, a_pen) if m["home_en"] == "brazil" else (a_pen, h_pen)
+        # Empate no tempo normal decidido nos pênaltis → usa o placar da disputa.
+        if has_shootout and br_h == br_a:
+            color = 0x009C3B if br_p > op_p else 0xE8473F
+        else:
+            color = 0x009C3B if br_h > br_a else (0xFFD700 if br_h == br_a else 0xE8473F)
     else:
         color = 0x2C3E50
 
@@ -273,6 +282,17 @@ def build_final_embed(m: dict, h_score: int, a_score: int, data: dict) -> discor
     )
     if grupo:
         embed.add_field(name="🏆 Fase", value=grupo, inline=True)
+
+    if has_shootout:
+        win_flag, win_pt = (hf, home_pt) if h_pen > a_pen else (af, away_pt)
+        embed.add_field(
+            name="🥅 Decisão por Pênaltis",
+            value=(
+                f"**{home_pt} {h_pen} — {a_pen} {away_pt}**\n"
+                f"🏆 **{win_flag} {win_pt}** se classifica!"
+            ),
+            inline=False,
+        )
 
     goals = _goals_text(all_goals, pmap)
     if goals:
