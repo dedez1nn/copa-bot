@@ -374,6 +374,23 @@ class CopaCog(commands.Cog):
         embed = _embed_artilharia(scorers)
         await interaction.followup.send(embed=embed)
 
+    @app_commands.command(name="chaveamento", description="Imagem do chaveamento atual do mata-mata (R32→Final)")
+    async def cmd_chaveamento(self, interaction: discord.Interaction) -> None:
+        if not await gate.allowed(interaction):
+            return
+        await interaction.response.defer()
+        png = await self._render_bracket()
+        if png is None:
+            await interaction.followup.send("❌ Não foi possível gerar o chaveamento agora.", ephemeral=True)
+            return
+        embed = discord.Embed(title="🗺️ Chaveamento — Copa 2026", color=0xFFCD46)
+        embed.set_image(url="attachment://chaveamento.png")
+        embed.set_footer(text="Copa do Mundo FIFA™ 2026")
+        await interaction.followup.send(
+            embed=embed,
+            file=discord.File(io.BytesIO(png), filename="chaveamento.png"),
+        )
+
     @app_commands.command(name="copa-quando", description="Mostra em quantos minutos começa a próxima partida")
     async def cmd_copa_quando(self, interaction: discord.Interaction) -> None:
         if not await gate.allowed(interaction):
@@ -435,7 +452,8 @@ class CopaCog(commands.Cog):
                 "`/copa` — Todos os jogos da rodada atual\n"
                 "`/copa-quando` — Em quantos minutos começa a próxima partida\n"
                 "`/copa-time <seleção>` — Todos os jogos de uma seleção\n"
-                "`/copa-artilharia` — Top artilheiros da Copa"
+                "`/copa-artilharia` — Top artilheiros da Copa\n"
+                "`/chaveamento` — Imagem do chaveamento do mata-mata"
             ),
             inline=False,
         )
