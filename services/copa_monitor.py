@@ -7,22 +7,27 @@ from datetime import datetime
 
 import discord
 
+import io
+
 from services.copa import (
     BRT, EN_TO_PT, FLAGS,
     _load_fifa_live, _load_fifa_timeline, _player_map_fifa,
     get_jogos_rodada, is_brazil_match, flag, team_color,
 )
 from services import youtube
+from services import bracket
 
 logger = logging.getLogger(__name__)
 
 _watch: dict[str, dict] = {}
 _first_tick = True
+_last_bracket_sig: str | None = None
 
 LINEUP_INTERVAL_BRAZIL = 10
 LINEUP_INTERVAL_OTHER = 60
 LINEUP_WINDOW_SECS = 3600
 VAR_WINDOW_SECS = 600
+BRACKET_DELAY_SECS = 3600  # chaveamento postado ~1h após o fim de cada jogo
 
 _POS_FIFA = {0: "GK", 1: "DEF", 2: "MEI", 3: "ATA"}
 
@@ -67,6 +72,9 @@ def _state(key: str) -> dict:
             "kickoff_notified": False,
             "h_score": 0,
             "a_score": 0,
+            "bracket_due_ts": None,
+            "bracket_sent": False,
+            "bracket_label": "",
         }
     return _watch[key]
 
@@ -361,6 +369,69 @@ def _event_embed(msg: str, team_en: str) -> discord.Embed:
     return discord.Embed(description=msg, color=team_color(team_en))
 
 
+def _schedule_bracket(st: dict, m: dict) -> None:
+    """Agenda o envio do chaveamento ~1h após o fim do jogo (apenas mata-mata)."""
+    if st.get("bracket_sent") or st.get("bracket_due_ts"):
+        return
+    st["bracket_due_ts"] = time.time() + BRACKET_DELAY_SECS
+    st["bracket_label"] = f"{m['home_pt']} x {m['away_pt']}"
+    logger.info("[bracket] agendado para +1h após %s", st["bracket_label"])
+
+
+async def _send_bracket(bot: discord.Client, channels: list[tuple[int, int]], label: str) -> None:
+    try:
+        png = await asyncio.to_thread(bracket.render_bracket_png)
+    except Exception:
+        logger.exception("[bracket] falha ao gerar imagem do chaveamento")
+        return
+    embed = discord.Embed(
+        title="🗺️ Chaveamento atualizado",
+        description=f"Situação do mata-mata após **{label}**." if label else "Situação do mata-mata.",
+        color=0xFFCD46,
+    )
+    embed.set_image(url="attachment://chaveamento.png")
+    embed.set_footer(text="Copa do Mundo FIFA™ 2026")
+    embed.timestamp = discord.utils.utcnow()
+    for guild_id, channel_id in channels:
+        ch = bot.get_channel(channel_id)
+        if ch is None:
+            continue
+        try:
+            await ch.send(
+                embed=embed,
+                file=discord.File(io.BytesIO(png), filename="chaveamento.png"),
+            )
+        except Exception:
+            logger.exception("[bracket] falha ao enviar para canal %s (guild %s)", channel_id, guild_id)
+
+
+async def _check_due_brackets(bot: discord.Client, channels: list[tuple[int, int]]) -> None:
+    """Envia chaveamentos cujo atraso de 1h já expirou (um por jogo encerrado).
+
+    Só posta se o chaveamento mudou desde o último envio — evita repetir a mesma
+    imagem na fase de grupos, quando o mata-mata ainda não avançou.
+    """
+    global _last_bracket_sig
+    now = time.time()
+    for st in _watch.values():
+        due = st.get("bracket_due_ts")
+        if not (due and not st.get("bracket_sent") and now >= due):
+            continue
+        st["bracket_sent"] = True
+        st["bracket_due_ts"] = None
+        try:
+            sig = await asyncio.to_thread(bracket.state_signature)
+        except Exception:
+            logger.exception("[bracket] falha ao calcular assinatura — enviando mesmo assim")
+            sig = None
+        if sig is not None and sig == _last_bracket_sig:
+            logger.info("[bracket] chaveamento inalterado desde o último envio — pulando %s",
+                        st.get("bracket_label", ""))
+            continue
+        _last_bracket_sig = sig
+        await _send_bracket(bot, channels, st.get("bracket_label", ""))
+
+
 # ── Verificação ao vivo via FIFA ──────────────────────────────────────────────
 
 async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
@@ -520,6 +591,7 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
     if not st["final_sent"] and match_status == 0 and st["kicked_off"]:
         st["final_sent"] = True
         await _send_all(bot, channels, embed=build_final_embed(m, h_score, a_score, data))
+        _schedule_bracket(st, m)
 
 
 # ── Verificação de timeline ───────────────────────────────────────────────────
@@ -740,6 +812,8 @@ async def run_monitor_tick(bot: discord.Client, channels: list[tuple[int, int]])
             logger.exception("[tick] erro ao processar %s x %s — ignorado neste tick",
                              m.get("home_pt"), m.get("away_pt"))
 
+    await _check_due_brackets(bot, channels)
+
     _first_tick = False
 
 
@@ -883,3 +957,4 @@ async def _tick_match(bot, channels, m: dict, now: float) -> None:
                     color=0x2C3E50,
                 ),
             )
+        _schedule_bracket(st, m)

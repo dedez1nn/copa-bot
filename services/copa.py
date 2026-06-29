@@ -386,16 +386,6 @@ def get_team_matches(team_query: str) -> list[dict]:
     return [m for m in (_matches_cache or []) if _match_team(m, t_en)]
 
 
-def get_group_matches(letter: str) -> list[dict]:
-    _refresh_cache()
-    group_name = f"Group {letter.upper()}"
-    return sorted(
-        [m for m in (_matches_cache or [])
-         if m["group"] == group_name or m["group"].startswith(f"Grupo {letter.upper()}")],
-        key=lambda x: x["date_ts"],
-    )
-
-
 def get_scorers() -> list[dict]:
     _refresh_cache()
     finished = [m for m in (_matches_cache or []) if m["status"] == "finished" and m.get("fifa_id")]

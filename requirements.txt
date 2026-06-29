@@ -2,3 +2,4 @@ discord.py>=2.4.0
 python-dotenv>=1.0.0
 motor>=3.3.0
 curl-cffi>=0.7.4
+Pillow>=10.0.0

@@ -157,21 +157,6 @@ def _embed_team(team_query: str, matches: list[dict]) -> discord.Embed:
     return embed
 
 
-def _embed_grupo(letter: str, gm: list[dict]) -> discord.Embed:
-    embed = discord.Embed(
-        title=f"🏆 Copa 2026 — Grupo {letter.upper()}",
-        color=0x3B82F6,
-    )
-    if gm:
-        jogos_str = [
-            f"{_jogo_linha(m)}  `{_ts_str(m['date_ts'])} BRT`"
-            for m in gm
-        ]
-        embed.add_field(name="Jogos", value="\n".join(jogos_str), inline=False)
-
-    return embed
-
-
 def _embed_artilharia(scorers: list[dict]) -> discord.Embed:
     embed = discord.Embed(title="🥇 Artilharia — Copa 2026", color=0x3B82F6)
     if not scorers:
@@ -302,23 +287,6 @@ class CopaCog(commands.Cog):
         embed = _embed_team(selecao, matches)
         await interaction.followup.send(embed=embed)
 
-    @app_commands.command(name="copa-grupo", description="Tabela e jogos de um grupo da Copa 2026")
-    @app_commands.describe(letra="Letra do grupo (A–L)")
-    async def cmd_copa_grupo(self, interaction: discord.Interaction, letra: str) -> None:
-        if not await gate.allowed(interaction):
-            return
-        await interaction.response.defer()
-        if len(letra) != 1 or letra.upper() not in "ABCDEFGHIJKL":
-            await interaction.followup.send("❌ Informe uma letra de grupo válida (A–L).", ephemeral=True)
-            return
-        try:
-            gm = await asyncio.to_thread(copa_svc.get_group_matches, letra)
-        except Exception:
-            await interaction.followup.send("❌ Erro ao buscar dados. Tente novamente.", ephemeral=True)
-            return
-        embed = _embed_grupo(letra, gm)
-        await interaction.followup.send(embed=embed)
-
     @app_commands.command(name="copa-artilharia", description="Artilheiros da Copa 2026")
     async def cmd_copa_artilharia(self, interaction: discord.Interaction) -> None:
         if not await gate.allowed(interaction):
@@ -393,7 +361,6 @@ class CopaCog(commands.Cog):
                 "`/copa` — Todos os jogos da rodada atual\n"
                 "`/copa-quando` — Em quantos minutos começa a próxima partida\n"
                 "`/copa-time <seleção>` — Todos os jogos de uma seleção\n"
-                "`/copa-grupo <letra>` — Jogos de um grupo (A–L)\n"
                 "`/copa-artilharia` — Top artilheiros da Copa"
             ),
             inline=False,

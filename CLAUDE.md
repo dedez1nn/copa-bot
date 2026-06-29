@@ -12,6 +12,7 @@ cogs/fenrir.py       — configuração de canal único de comandos (/canal-fenr
 cogs/dev.py          — comandos de teste de embed (admin only, dados falsos)
 services/copa.py     — acesso à FIFA API, cache em disco, parsing de partidas
 services/copa_monitor.py — lógica ao vivo: gols, cartões, VAR, escalações, períodos
+services/bracket.py  — chaveamento do mata-mata (R32→Final): dados + imagem PNG (Pillow)
 services/db.py       — Motor (MongoDB async); coleções: copa_channels,
                        selfbot_trap_channels, selfbot_log_channels, command_channels
 services/gate.py     — cache em memória de canal permitido por guild;
@@ -26,6 +27,12 @@ services/gate.py     — cache em memória de canal permitido por guild;
 | `GET /live/football/{IdMatch}` | Dados ao vivo: placar, gols, cartões, escalações (sem cache) |
 
 `MatchDay` retorna `null` — rodadas são detectadas por clusterização de datas.
+
+**Chaveamento**: derivado do mesmo `/calendar/matches`. As partidas do mata-mata
+(`IdStage` R32=289287, R16=289288, QF=289289, SF=289290, Final=289292) trazem
+`MatchNumber` (73–104), `PlaceHolderA/B` (`"1A"`, `"3ABCDF"` ou `"W74"` = venc. do jogo 74),
+`Home/Away` (preenchidos quando conhecidos, com `PictureUrl` da bandeira) e `Winner`
+(`IdTeam` do vencedor). A árvore inteira é montada a partir desses campos.
 
 ## Lógicas importantes
 
@@ -44,6 +51,11 @@ Envia apenas uma vez por partida (`lineup_sent = True`).
 
 **Resumo diário**: dispara uma vez por dia às 09:00 BRT via verificação no loop de 10s
 com guard `_daily_sent_date`.
+
+**Chaveamento pós-jogo**: ao fim de cada partida o monitor agenda o envio da imagem do
+mata-mata para ~1h depois (`BRACKET_DELAY_SECS`). `_check_due_brackets` só posta se a
+assinatura do chaveamento (`bracket.state_signature`) mudou desde o último envio — evita
+repetir a mesma imagem na fase de grupos.
 
 **Gate de canal** (`services/gate.py`): carregado no boot por `FenrirCog.cog_load`.
 Comandos públicos chamam `gate.allowed(interaction)` antes de `defer()`.

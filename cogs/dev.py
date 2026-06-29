@@ -1,6 +1,7 @@
 """Cog Dev — comandos de teste (admin) para disparar cada embed individualmente."""
 
 import asyncio
+import io
 import time
 import logging
 from datetime import datetime
@@ -9,9 +10,10 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from services import bracket
+
 from cogs.copa import (
     _embed_artilharia,
-    _embed_grupo,
     _embed_jogos_rodada,
     _embed_team,
     _embed_resumo_diario,
@@ -89,13 +91,6 @@ _FAKE_TIME_MATCHES = [
     _fm("brazil", "Brasil", "argentina", "Argentina", "inprogress", 1, 1,   -2700,  "Grupo B"),
     _fm("brazil", "Brasil", "france",    "França",    "finished",   2, 0,  -172800, "Grupo B"),
     _fm("brazil", "Brasil", "germany",   "Alemanha",  "notstarted", None, None, 86400, "Grupo B"),
-]
-
-_FAKE_GRUPO = [
-    _fm("brazil",    "Brasil",     "argentina", "Argentina", "inprogress", 1, 1,  -2700),
-    _fm("france",    "França",     "germany",   "Alemanha",  "notstarted", None, None, 3600),
-    _fm("brazil",    "Brasil",     "france",    "França",    "finished",   2, 0, -172800),
-    _fm("argentina", "Argentina",  "germany",   "Alemanha",  "finished",   1, 0,  -86400),
 ]
 
 _FAKE_ARTILHARIA = [
@@ -230,15 +225,6 @@ class DevCog(commands.Cog):
         await interaction.followup.send(embed=_embed_team("brasil", _FAKE_TIME_MATCHES))
 
     @app_commands.command(
-        name="teste-grupo",
-        description="[TESTE] Embed de jogos de um grupo (dados falsos — Grupo B)",
-    )
-    @app_commands.default_permissions(administrator=True)
-    async def teste_grupo(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
-        await interaction.followup.send(embed=_embed_grupo("B", _FAKE_GRUPO))
-
-    @app_commands.command(
         name="teste-artilharia",
         description="[TESTE] Embed de artilharia (dados falsos)",
     )
@@ -246,6 +232,62 @@ class DevCog(commands.Cog):
     async def teste_artilharia(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         await interaction.followup.send(embed=_embed_artilharia(_FAKE_ARTILHARIA))
+
+    @app_commands.command(
+        name="teste-chaveamento",
+        description="[TESTE] Imagem do chaveamento do mata-mata (dados reais da FIFA)",
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def teste_chaveamento(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        try:
+            png = await asyncio.to_thread(bracket.render_bracket_png)
+        except Exception:
+            logger.exception("Falha ao gerar chaveamento")
+            await interaction.followup.send("❌ Falha ao gerar o chaveamento.", ephemeral=True)
+            return
+        embed = discord.Embed(title="🗺️ Chaveamento — Copa 2026", color=0xFFCD46)
+        embed.set_image(url="attachment://chaveamento.png")
+        await interaction.followup.send(
+            embed=embed,
+            file=discord.File(io.BytesIO(png), filename="chaveamento.png"),
+        )
+
+    @app_commands.command(
+        name="avancar",
+        description="[TESTE] Avança uma seleção uma rodada no chaveamento (simulação)",
+    )
+    @app_commands.describe(selecao="Nome da seleção (ex: Brasil, Canadá, Argentina)")
+    @app_commands.default_permissions(administrator=True)
+    async def avancar(self, interaction: discord.Interaction, selecao: str) -> None:
+        await interaction.response.defer()
+        ok, msg = await asyncio.to_thread(bracket.advance_team, selecao)
+        if not ok:
+            await interaction.followup.send(msg, ephemeral=True)
+            return
+        try:
+            png = await asyncio.to_thread(bracket.render_bracket_png)
+        except Exception:
+            logger.exception("Falha ao gerar chaveamento após avanço")
+            await interaction.followup.send(f"{msg}\n⚠️ Falha ao gerar a imagem.", ephemeral=True)
+            return
+        embed = discord.Embed(title="🗺️ Chaveamento — Copa 2026 (simulação)",
+                              description=msg, color=0xFFCD46)
+        embed.set_image(url="attachment://chaveamento.png")
+        await interaction.followup.send(
+            embed=embed,
+            file=discord.File(io.BytesIO(png), filename="chaveamento.png"),
+        )
+
+    @app_commands.command(
+        name="avancar-reset",
+        description="[TESTE] Zera a simulação de avanço, voltando ao estado real da FIFA",
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def avancar_reset(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        await asyncio.to_thread(bracket.reset_overrides)
+        await interaction.followup.send("♻️ Simulação zerada — chaveamento voltou ao estado real da API.", ephemeral=True)
 
     @app_commands.command(
         name="teste-escalacao",
