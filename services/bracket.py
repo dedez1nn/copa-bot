@@ -196,11 +196,14 @@ def _flag_png(code: str) -> bytes | None:
 
 # ── Renderização (Pillow) ─────────────────────────────────────────────────────
 
-# Layout
-_BOX_W = 198
+# Layout — duas metades empilhadas verticalmente (imagem em retrato).
+# Colunas: R32, R16, QF, SF, Final (5 ao todo); as duas metades partilham as
+# mesmas 4 primeiras colunas e convergem na Final (coluna 4), à direita.
+_BOX_W = 190
 _BOX_H = 50
-_COL_GAP = 48
-_LEAF_VGAP = 14
+_COL_GAP = 36
+_LEAF_VGAP = 18
+_HALF_GAP = 44          # espaço vertical entre a metade de cima e a de baixo
 _MARGIN_X = 36
 _TOP = 128
 _BOTTOM = 36
@@ -237,30 +240,9 @@ def _font(size: int, bold: bool = False):
     return ImageFont.load_default()
 
 
-def _col_index(order: int, side: str) -> int:
-    """Coluna 0..8 a partir da ordem da rodada e do lado (L/R/C)."""
-    if side == "C":          # Final
-        return 4
-    if side == "L":
-        return order - 1     # R32→0, R16→1, QF→2, SF→3
-    return 9 - order         # R32→8, R16→7, QF→6, SF→5
-
-
-def _assign_sides(nodes: dict[int, dict]) -> dict[int, str]:
-    sides: dict[int, str] = {104: "C"}
-
-    def walk(num, side):
-        sides[num] = side
-        for k in children(nodes, num):
-            walk(k, side)
-
-    for k in children(nodes, 101):
-        walk(k, "L")
-    sides[101] = "L"
-    for k in children(nodes, 102):
-        walk(k, "R")
-    sides[102] = "R"
-    return sides
+def _col_index(order: int) -> int:
+    """Coluna 0..3 a partir da ordem da rodada (R32→0 … SF→3). Final é a coluna 4."""
+    return order - 1
 
 
 def _trunc(draw, text: str, font, max_w: int) -> str:
@@ -279,36 +261,38 @@ def render_bracket_png() -> bytes:
     if 104 not in nodes:
         raise RuntimeError("dados do mata-mata indisponíveis na API")
 
-    sides = _assign_sides(nodes)
-
-    # Posições verticais: percorre cada lado atribuindo slots às folhas (R32).
+    # Duas metades empilhadas: a de cima (lado esquerdo, 101) começa no topo;
+    # a de baixo (lado direito, 102) começa abaixo dela, separada por _HALF_GAP.
+    # Ambas fluem da esquerda (R32) para a direita (SF) e convergem na Final.
     pos: dict[int, tuple[int, int]] = {}
     slot = {"L": 0, "R": 0}
     leaf_h = _BOX_H + _LEAF_VGAP
 
-    def place(num: int, side: str) -> float:
+    def place(num: int, side: str, base: float) -> float:
         node = nodes[num]
         kids = children(nodes, num)
-        x = _MARGIN_X + _col_index(node["order"], side) * (_BOX_W + _COL_GAP)
+        x = _MARGIN_X + _col_index(node["order"]) * (_BOX_W + _COL_GAP)
         if not kids:
             s = slot[side]
             slot[side] += 1
-            y = _TOP + s * leaf_h + _BOX_H / 2
+            y = base + s * leaf_h + _BOX_H / 2
         else:
-            ys = [place(k, side) for k in kids]
+            ys = [place(k, side, base) for k in kids]
             y = sum(ys) / len(ys)
         pos[num] = (x, y)
         return y
 
-    yl = place(101, "L")
-    yr = place(102, "R")
-    # Final no centro, entre as duas semifinais
-    fx = _MARGIN_X + _col_index(5, "C") * (_BOX_W + _COL_GAP)
+    yl = place(101, "L", _TOP)
+    n_left = slot["L"]
+    r_base = _TOP + n_left * leaf_h + _HALF_GAP
+    yr = place(102, "R", r_base)
+    # Final na coluna 4 (à direita), no meio vertical entre as duas semifinais
+    fx = _MARGIN_X + 4 * (_BOX_W + _COL_GAP)
     pos[104] = (fx, (yl + yr) / 2)
 
-    total_leaves = max(slot["L"], slot["R"])
-    width = _MARGIN_X * 2 + 9 * _BOX_W + 8 * _COL_GAP
-    height = int(_TOP + total_leaves * leaf_h - _LEAF_VGAP + _BOTTOM)
+    total_leaves = n_left + slot["R"]
+    width = _MARGIN_X * 2 + 5 * _BOX_W + 4 * _COL_GAP
+    height = int(_TOP + total_leaves * leaf_h + _HALF_GAP - _LEAF_VGAP + _BOTTOM)
 
     img = Image.new("RGB", (width, height), _BG)
     draw = ImageDraw.Draw(img)
@@ -325,45 +309,25 @@ def render_bracket_png() -> bytes:
     draw.text((_MARGIN_X, 26), "Chaveamento — Copa do Mundo 2026", font=f_title, fill=_GOLD)
     draw.text((_MARGIN_X, 68), "Mata-mata · atualizado via FIFA", font=f_sub, fill=_GREY)
 
-    # Cabeçalhos de coluna
-    col_rounds = [("R32", "L"), ("R16", "L"), ("QF", "L"), ("SF", "L"),
-                  ("F", "C"), ("SF", "R"), ("QF", "R"), ("R16", "R"), ("R32", "R")]
-    for i, (rnd, _s) in enumerate(col_rounds):
+    # Cabeçalhos de coluna (compartilhados pelas duas metades)
+    col_rounds = ["R32", "R16", "QF", "SF", "F"]
+    for i, rnd in enumerate(col_rounds):
         cx = _MARGIN_X + i * (_BOX_W + _COL_GAP)
         label = ROUND_LABELS[rnd]
         w = draw.textlength(label, font=f_head)
         draw.text((cx + (_BOX_W - w) / 2, _TOP - 30), label, font=f_head, fill=_WHITE)
 
-    # Conectores (desenhados antes das caixas)
-    def edge_right(num):
-        x, y = pos[num]
-        return x + _BOX_W, y
-
-    def edge_left(num):
-        x, y = pos[num]
-        return x, y
-
+    # Conectores (desenhados antes das caixas): direita do filho → esquerda do pai
     for num, node in nodes.items():
         kids = children(nodes, num)
         if not kids:
             continue
-        side = sides[num]
-        px, py = pos[num]
-        if side == "L" or (side == "C"):
-            # Para Final, trata cada filho conforme o lado dele
-            pass
+        tx, ty = pos[num]            # borda esquerda do pai
         for k in kids:
-            kside = sides[k]
-            if kside == "L":
-                cxr, cyr = edge_right(k)
-                tx, ty = edge_left(num)
-                midx = (cxr + tx) / 2
-                draw.line([(cxr, cyr), (midx, cyr), (midx, ty), (tx, ty)], fill=_LINE, width=2)
-            else:  # R
-                cxl, cyl = edge_left(k)
-                tx, ty = edge_right(num)
-                midx = (cxl + tx) / 2
-                draw.line([(cxl, cyl), (midx, cyl), (midx, ty), (tx, ty)], fill=_LINE, width=2)
+            kx, ky = pos[k]
+            cxr = kx + _BOX_W        # borda direita do filho
+            midx = (cxr + tx) / 2
+            draw.line([(cxr, ky), (midx, ky), (midx, ty), (tx, ty)], fill=_LINE, width=2)
 
     # Caixas
     for num, node in nodes.items():
