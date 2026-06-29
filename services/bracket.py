@@ -148,6 +148,37 @@ def _lookup_team(nodes: dict[int, dict], team_id: str) -> dict | None:
     return None
 
 
+def _code(team: dict) -> str:
+    return (team.get("code") or team["pt"][:3]).title()
+
+
+def _slot_abbrev(nodes: dict[int, dict], num: int, side: str) -> str:
+    """Abreviação curta de um lado de um confronto.
+
+    Time conhecido → sigla (ex.: "Bra"). Vaga vinda de um confronto cujos dois
+    participantes já são conhecidos → par "Bra/Jpn". Caso contrário (profundo
+    demais) → marcador compacto "V##".
+    """
+    node = nodes.get(num)
+    if not node:
+        return "?"
+    team, _ = slot_text(nodes, num, side)  # resolve a cadeia de vencedores
+    if team:
+        return _code(team)
+    ph = node["pha"] if side == "A" else node["phb"]
+    if ph and ph.startswith("W") and ph[1:].isdigit():
+        fn = int(ph[1:])
+        if fn in nodes:
+            ta, _ = slot_text(nodes, fn, "A")
+            tb, _ = slot_text(nodes, fn, "B")
+            if ta and tb:
+                return f"{_code(ta)}/{_code(tb)}"
+        return f"V{ph[1:]}"
+    if ph and len(ph) >= 2 and ph[0] in "123" and ph[1:].isalpha():
+        return f"{ph[0]}{ph[1].upper()}" if len(ph) == 2 else f"{ph[0]}º"
+    return ph or "?"
+
+
 def slot_text(nodes: dict[int, dict], num: int, side: str) -> tuple[dict | None, str]:
     """(team|None, rótulo) de um lado do confronto.
 
@@ -168,6 +199,13 @@ def slot_text(nodes: dict[int, dict], num: int, side: str) -> tuple[dict | None,
         if t:
             return t, t["pt"]
         break
+    # vaga indefinida alimentada por um confronto (W##): mostra os participantes dele
+    if ph and ph.startswith("W") and ph[1:].isdigit():
+        fn = int(ph[1:])
+        if fn in nodes:
+            a = _slot_abbrev(nodes, fn, "A")
+            b = _slot_abbrev(nodes, fn, "B")
+            return None, f"Venc {a} x {b}"
     return None, _ph_label(ph)
 
 
@@ -220,12 +258,18 @@ _WIN = (74, 201, 126)
 _LIVE = (235, 73, 63)
 _GOLD = (255, 205, 70)
 
+_ASSETS_FONTS = Path(__file__).resolve().parents[1] / "assets" / "fonts"
+
+# A fonte empacotada vem primeiro para garantir acentos em qualquer ambiente
+# (o Discloud não tem o DejaVu instalado nos caminhos do sistema).
 _FONT_PATHS = [
+    str(_ASSETS_FONTS / "DejaVuSans.ttf"),
     "/usr/share/fonts/TTF/DejaVuSans.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/dejavu/DejaVuSans.ttf",
 ]
 _FONT_BOLD_PATHS = [
+    str(_ASSETS_FONTS / "DejaVuSans-Bold.ttf"),
     "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
