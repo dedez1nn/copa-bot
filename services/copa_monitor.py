@@ -72,6 +72,8 @@ def _state(key: str) -> dict:
             "shootout_announced": False,
             "shootout_home": 0,
             "shootout_away": 0,
+            "et1_announced": False,
+            "et2_announced": False,
         }
     return _watch[key]
 
@@ -579,6 +581,35 @@ async def _check_fifa_live(bot, channels, m: dict, st: dict) -> None:
             st["2ht_sent"] = True
             await _send_all(bot, channels, embed=build_2ht_embed(m, h_score, a_score, data))
 
+        if period == 7 and not st["et1_announced"]:
+            st["et1_announced"] = True
+            await _send_all(
+                bot, channels,
+                embed=discord.Embed(
+                    title="⏱️ Vamos à Prorrogação!",
+                    description=(
+                        f"**Empate no tempo normal — tem mais 30 minutos de emoção!**\n"
+                        f"**{flag(m['home_en'])} {home_pt}  {h_score} — {a_score}  "
+                        f"{away_pt} {flag(m['away_en'])}**"
+                    ),
+                    color=0xFF6600,
+                ),
+            )
+
+        if period == 9 and not st["et2_announced"]:
+            st["et2_announced"] = True
+            await _send_all(
+                bot, channels,
+                embed=discord.Embed(
+                    title="🔁 2º Tempo da Prorrogação",
+                    description=(
+                        f"**{flag(m['home_en'])} {home_pt}  {h_score} — {a_score}  "
+                        f"{away_pt} {flag(m['away_en'])}**"
+                    ),
+                    color=0xFF6600,
+                ),
+            )
+
         if period == 11 and not st["shootout_announced"]:
             st["shootout_announced"] = True
             await _send_all(
@@ -938,6 +969,10 @@ async def _tick_match(bot, channels, m: dict, now: float) -> None:
                 st["ht_sent"] = True
             if period is not None and period >= 4:
                 st["2ht_sent"] = True
+            if period is not None and period >= 7:
+                st["et1_announced"] = True
+            if period is not None and period >= 9:
+                st["et2_announced"] = True
             if period == 11:
                 # Reinício durante a disputa: já anunciada e placar reconstruído.
                 st["shootout_announced"] = True
