@@ -290,9 +290,15 @@ class CopaCog(commands.Cog):
             return None
 
     async def _check_end_of_day_bracket(self) -> None:
-        """Envia o chaveamento ~1h após o fim do último jogo do dia (1x por dia)."""
+        """Envia chaveamento + artilharia ~1h após o fim do último jogo de um dia.
+
+        A "data" é a de início dos jogos (BRT), não o relógio atual — assim jogos
+        que começam à noite e terminam após a meia-noite (prorrogação/pênaltis no
+        mata-mata) ainda disparam o envio para o dia correto.
+        """
         now = time.time()
-        # Já armado: aguarda o atraso de 1h e dispara uma vez.
+
+        # Já armado: aguarda o atraso e dispara uma vez.
         if self._eod_armed_date:
             if now < self._eod_due_ts:
                 return
@@ -301,51 +307,68 @@ class CopaCog(commands.Cog):
             if date in self._eod_sent_dates:
                 return
             self._eod_sent_dates.add(date)
-            bracket_png = await self._render_bracket(highlight_today=True)
-            art_png = await self._render_artilharia()
-            if bracket_png is None and art_png is None:
-                return
-            embed = None
-            if bracket_png is not None:
-                embed = discord.Embed(
-                    title="🗺️ Chaveamento — Fim dos jogos do dia",
-                    description="Situação atual do mata-mata e artilharia.",
-                    color=0xFFCD46,
-                )
-                embed.set_image(url="attachment://chaveamento.png")
-                embed.set_footer(text="Copa do Mundo FIFA™ 2026")
-                embed.timestamp = discord.utils.utcnow()
-            for guild_id, channel_id in self._monitor_channels:
-                ch = self.bot.get_channel(channel_id)
-                if not ch:
-                    continue
-                files = []
-                if bracket_png is not None:
-                    files.append(discord.File(io.BytesIO(bracket_png), filename="chaveamento.png"))
-                if art_png is not None:
-                    files.append(discord.File(io.BytesIO(art_png), filename="artilharia.png"))
-                try:
-                    await ch.send(embed=embed, files=files)
-                except Exception:
-                    logger.exception("Erro ao enviar fim de dia para guild %s", guild_id)
+            await self._send_eod_bracket()
             return
 
-        # Não armado: arma quando todos os jogos de hoje estiverem encerrados.
-        today = datetime.now(BRT).strftime("%Y-%m-%d")
-        if today in self._eod_sent_dates:
-            return
+        # Não armado: arma quando todos os jogos de um dia recente terminarem.
         try:
-            jogos = await asyncio.to_thread(copa_svc.get_jogos_do_dia)
+            jogos = await asyncio.to_thread(copa_svc.get_jogos_rodada)
         except Exception:
-            logger.exception("Erro ao buscar jogos do dia (fim de dia)")
+            logger.exception("Erro ao buscar jogos da rodada (fim de dia)")
             return
         if not jogos:
             return
-        if all(j["status"] == "finished" for j in jogos):
-            self._eod_armed_date = today
-            self._eod_due_ts = now + BRACKET_EOD_DELAY_SECS
-            logger.info("[bracket] todos os %d jogos de %s encerrados — chaveamento em +1h",
-                        len(jogos), today)
+
+        # Agrupa por data de início (BRT).
+        by_date: dict[str, list[dict]] = {}
+        for j in jogos:
+            d = datetime.fromtimestamp(j["date_ts"], tz=BRT).strftime("%Y-%m-%d")
+            by_date.setdefault(d, []).append(j)
+
+        # Considera só a data mais recente cujos jogos já começaram: se todos
+        # terminaram (e ainda não enviada), arma; caso contrário, aguarda.
+        for d in sorted(by_date, reverse=True):
+            games = by_date[d]
+            if not any(g["date_ts"] <= now for g in games):
+                continue  # dia futuro ainda não iniciado
+            if d in self._eod_sent_dates:
+                break
+            if all(g["status"] == "finished" for g in games):
+                self._eod_armed_date = d
+                self._eod_due_ts = now + BRACKET_EOD_DELAY_SECS
+                logger.info("[bracket] todos os %d jogos de %s encerrados — chaveamento em +1h",
+                            len(games), d)
+            break
+
+    async def _send_eod_bracket(self) -> None:
+        """Renderiza e envia o chaveamento (destaque do dia) + artilharia."""
+        bracket_png = await self._render_bracket(highlight_today=True)
+        art_png = await self._render_artilharia()
+        if bracket_png is None and art_png is None:
+            return
+        embed = None
+        if bracket_png is not None:
+            embed = discord.Embed(
+                title="🗺️ Chaveamento — Fim dos jogos do dia",
+                description="Situação atual do mata-mata e artilharia.",
+                color=0xFFCD46,
+            )
+            embed.set_image(url="attachment://chaveamento.png")
+            embed.set_footer(text="Copa do Mundo FIFA™ 2026")
+            embed.timestamp = discord.utils.utcnow()
+        for guild_id, channel_id in self._monitor_channels:
+            ch = self.bot.get_channel(channel_id)
+            if not ch:
+                continue
+            files = []
+            if bracket_png is not None:
+                files.append(discord.File(io.BytesIO(bracket_png), filename="chaveamento.png"))
+            if art_png is not None:
+                files.append(discord.File(io.BytesIO(art_png), filename="artilharia.png"))
+            try:
+                await ch.send(embed=embed, files=files)
+            except Exception:
+                logger.exception("Erro ao enviar fim de dia para guild %s", guild_id)
 
     # ── Slash commands ────────────────────────────────────────────────────────
 

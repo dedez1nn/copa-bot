@@ -56,9 +56,12 @@ com guard `_daily_sent_date`. Anexa **chaveamento** (com os jogos de hoje destac
 `highlight_today=True`) **+ artilharia** ao resumo.
 
 **Chaveamento (imagem PNG)**: enviado pelo `CopaCog` em dois momentos —
-(1) anexado ao resumo diário das 09:00 BRT, e (2) `_check_end_of_day_bracket`: ao detectar
-que **todos** os jogos do dia (`get_jogos_do_dia`) terminaram, arma um timer e posta a imagem
-1h depois (`BRACKET_EOD_DELAY_SECS`), uma vez por dia (`_eod_sent_dates`). Em ambos os
+(1) anexado ao resumo diário das 09:00 BRT, e (2) `_check_end_of_day_bracket`: agrupa os
+jogos da rodada (`get_jogos_rodada`) por **data de início (BRT)** e, ao detectar que **todos**
+os jogos da data mais recente já iniciada terminaram, arma um timer e posta (via
+`_send_eod_bracket`) 1h depois (`BRACKET_EOD_DELAY_SECS`), uma vez por data (`_eod_sent_dates`).
+Chavear pela data de início — e não pelo relógio — garante o disparo de jogos do mata-mata que
+começam à noite e terminam após a meia-noite (prorrogação/pênaltis). Em ambos os
 momentos usa `highlight_today=True` e envia também a **artilharia** (top 5, imagem 1:1).
 `render_bracket_png(highlight_today=True)` marca com borda dourada + selo "HOJE" as
 partidas cuja data (BRT) é hoje.
