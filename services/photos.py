@@ -84,15 +84,23 @@ def _api_get(path: str) -> dict | None:
 
 
 def _resolve_id(name: str, team_en: str, cache: dict) -> int | None:
-    """Resolve o id do jogador (com cache). team_en ajuda a desambiguar."""
+    """Resolve o id do jogador (com cache). team_en ajuda a desambiguar.
+
+    Só guarda no cache resultados positivos: falhas transitórias (sem chave,
+    cota estourada, erro de rede) NÃO são cacheadas, para não "envenenar" o
+    cache com None e impedir novas tentativas.
+    """
     ck = f"{_norm(name)}|{team_en}"
-    if ck in cache:
-        return cache[ck]  # pode ser int ou None (não encontrado — não re-busca)
+    if cache.get(ck):
+        return cache[ck]
 
     term = _search_term(name)
     data = _api_get("/players/profiles?search=" + urllib.parse.quote(term))
-    results = (data or {}).get("response") or []
+    if not data or data.get("errors"):
+        logger.warning("[photos] busca falhou para %r (sem chave/cota/erro)", name)
+        return None  # transitório — não cacheia, tenta de novo na próxima
 
+    results = data.get("response") or []
     chosen = None
     if results:
         # 1ª escolha: nacionalidade bate com o time
@@ -105,8 +113,9 @@ def _resolve_id(name: str, team_en: str, cache: dict) -> int | None:
         if chosen is None:
             chosen = (results[0].get("player") or {}).get("id")
 
-    cache[ck] = chosen
-    _save_id_cache(cache)
+    if chosen:
+        cache[ck] = chosen
+        _save_id_cache(cache)
     return chosen
 
 
