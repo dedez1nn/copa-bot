@@ -22,8 +22,11 @@ logger = logging.getLogger(__name__)
 _API_BASE = "https://v3.football.api-sports.io"
 _PHOTO_URL = "https://media.api-sports.io/football/players/{id}.png"
 
-_ID_CACHE = CACHE_DIR / "apifootball_ids.json"
+_ID_CACHE = CACHE_DIR / "apifootball_ids_v2.json"   # v2: nova heurística de matching
 _PHOTO_CACHE = CACHE_DIR / "player_photos"
+
+# Sufixos de nome que não ajudam a identificar (e poluem a busca por sobrenome).
+_SUFFIXES = {"junior", "jr", "filho", "neto", "sobrinho", "i", "ii", "iii"}
 
 # Nacionalidade (en da API-Football) → nome interno (en) usado no projeto.
 # Só os casos em que Title(en) != nacionalidade da API.
@@ -64,10 +67,17 @@ def _nat_to_en(nat: str | None) -> str:
     return _NAT_FIX.get(n, n)
 
 
-def _search_term(name: str) -> str:
-    """Termo de busca: último token alfabético do nome (sobrenome)."""
-    toks = [t for t in name.replace(".", " ").split() if any(c.isalpha() for c in t)]
-    return toks[-1] if toks else name
+def _name_tokens(name: str) -> list[str]:
+    return [t for t in _norm(name).replace(".", " ").split() if t.isalpha()]
+
+
+def _score(fifa_tokens: list[str], cand_name: str, cand_nat: str | None,
+           team_en: str) -> int:
+    """Pontua um candidato: nacionalidade vale muito; cada token de nome em comum, 1."""
+    cand_tokens = set(_name_tokens(cand_name))
+    overlap = sum(1 for t in fifa_tokens if t in cand_tokens)
+    nat = 10 if _nat_to_en(cand_nat) == _norm(team_en) else 0
+    return nat + overlap
 
 
 def _api_get(path: str) -> dict | None:
@@ -94,24 +104,26 @@ def _resolve_id(name: str, team_en: str, cache: dict) -> int | None:
     if cache.get(ck):
         return cache[ck]
 
-    term = _search_term(name)
+    toks = _name_tokens(name)
+    if not toks:
+        return None
+    term = toks[-1]  # busca pelo sobrenome (cobre o jogador certo no topo)
+    # tokens úteis para pontuar (sem sufixos como "junior"); se sobrar nada, usa todos
+    fifa_tokens = [t for t in toks if t not in _SUFFIXES] or toks
+
     data = _api_get("/players/profiles?search=" + urllib.parse.quote(term))
     if not data or data.get("errors"):
         logger.warning("[photos] busca falhou para %r (sem chave/cota/erro)", name)
         return None  # transitório — não cacheia, tenta de novo na próxima
 
     results = data.get("response") or []
-    chosen = None
-    if results:
-        # 1ª escolha: nacionalidade bate com o time
-        for x in results:
-            p = x.get("player") or {}
-            if _nat_to_en(p.get("nationality")) == _norm(team_en):
-                chosen = p.get("id")
-                break
-        # fallback: primeiro resultado (busca já ordena por relevância)
-        if chosen is None:
-            chosen = (results[0].get("player") or {}).get("id")
+    chosen, best = None, -1
+    for x in results:
+        p = x.get("player") or {}
+        cand = f"{p.get('firstname') or ''} {p.get('lastname') or ''}"
+        sc = _score(fifa_tokens, cand, p.get("nationality"), team_en)
+        if sc > best:
+            best, chosen = sc, p.get("id")
 
     if chosen:
         cache[ck] = chosen
