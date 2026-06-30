@@ -11,6 +11,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from services import artilharia
 from services import bracket
 from services import copa as copa_svc
 from services import copa_monitor as monitor
@@ -371,8 +372,15 @@ class CopaCog(commands.Cog):
         except Exception:
             await interaction.followup.send("❌ Erro ao buscar artilheiros.", ephemeral=True)
             return
-        embed = _embed_artilharia(scorers)
-        await interaction.followup.send(embed=embed)
+        if scorers:
+            try:
+                png = await asyncio.to_thread(artilharia.render_artilharia_png, scorers)
+                file = discord.File(io.BytesIO(png), filename="artilharia.png")
+                await interaction.followup.send(file=file)
+                return
+            except Exception:
+                logger.exception("Falha ao renderizar artilharia em imagem; usando embed")
+        await interaction.followup.send(embed=_embed_artilharia(scorers))
 
     @app_commands.command(name="chaveamento", description="Imagem do chaveamento atual do mata-mata (R32→Final)")
     async def cmd_chaveamento(self, interaction: discord.Interaction) -> None:

@@ -12,6 +12,9 @@ cogs/fenrir.py       — configuração de canal único de comandos (/canal-fenr
 services/copa.py     — acesso à FIFA API, cache em disco, parsing de partidas
 services/copa_monitor.py — lógica ao vivo: gols, cartões, VAR, escalações, períodos
 services/bracket.py  — chaveamento do mata-mata (R32→Final): dados + imagem PNG (Pillow)
+services/artilharia.py — imagem PNG da artilharia (Pillow); fotos via services.photos
+services/photos.py   — foto de jogador via API-Football: id por nome em
+                       /players/profiles + CDN media.api-sports.io (cache em disco)
 services/db.py       — Motor (MongoDB async); coleções: copa_channels,
                        selfbot_trap_channels, selfbot_log_channels, command_channels
 services/gate.py     — cache em memória de canal permitido por guild;
@@ -74,3 +77,4 @@ Comandos admin (`default_permissions(administrator=True)`) são isentos.
 | `DISCORD_APP_ID` | Application ID |
 | `MONGO_URI` | URI completo de conexão MongoDB |
 | `MONGO_INITDB_DATABASE` | Nome do banco (padrão: `copa_discord`) |
+| `APIFOOTBALL_KEY` | Chave da API-Football (api-sports) — só para fotos da artilharia. Opcional: sem ela, a artilharia usa iniciais no lugar das fotos. Plano Free: 100 req/dia, busca por nome em `/players/profiles` (id→foto cacheados em disco) |
