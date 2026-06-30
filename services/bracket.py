@@ -258,7 +258,9 @@ _WIN = (74, 201, 126)
 _LIVE = (235, 73, 63)
 _GOLD = (255, 205, 70)
 
-_ASSETS_FONTS = Path(__file__).resolve().parents[1] / "assets" / "fonts"
+_ASSETS = Path(__file__).resolve().parents[1] / "assets"
+_ASSETS_FONTS = _ASSETS / "fonts"
+_BG_IMAGE = _ASSETS / "bg_chaveamento.jpg"   # fundo padrão (se existir)
 
 # A fonte empacotada vem primeiro para garantir acentos em qualquer ambiente
 # (o Discloud não tem o DejaVu instalado nos caminhos do sistema).
@@ -297,9 +299,44 @@ def _trunc(draw, text: str, font, max_w: int) -> str:
     return text + "…"
 
 
-def render_bracket_png() -> bytes:
-    """Renderiza o chaveamento do mata-mata (R32→Final) e retorna PNG em bytes."""
+def _make_canvas(width: int, height: int, bg_path: str | None,
+                 blur: float, darken: float):
+    """Canvas base: imagem de fundo (cover + desfoque + escurecimento) ou cor sólida."""
+    from PIL import Image, ImageFilter
+
+    if bg_path and Path(bg_path).exists():
+        try:
+            bg = Image.open(bg_path).convert("RGB")
+            # cover: escala para preencher o canvas e recorta o excesso (centralizado)
+            scale = max(width / bg.width, height / bg.height)
+            nw, nh = round(bg.width * scale), round(bg.height * scale)
+            bg = bg.resize((nw, nh), Image.LANCZOS)
+            left, top = (nw - width) // 2, (nh - height) // 2
+            bg = bg.crop((left, top, left + width, top + height))
+            if blur > 0:
+                bg = bg.filter(ImageFilter.GaussianBlur(blur))
+            if darken > 0:
+                bg = Image.blend(bg, Image.new("RGB", (width, height), (0, 0, 0)),
+                                 min(max(darken, 0.0), 1.0))
+            return bg
+        except Exception as e:
+            logger.warning("[bracket] falha ao usar fundo %s: %s", bg_path, e)
+    return Image.new("RGB", (width, height), _BG)
+
+
+def render_bracket_png(bg_path: str | None = None, bg_blur: float = 12,
+                       bg_dark: float = 0.6) -> bytes:
+    """Renderiza o chaveamento do mata-mata (R32→Final) e retorna PNG em bytes.
+
+    bg_path: imagem de fundo. Se None, usa o fundo empacotado (_BG_IMAGE) quando
+    existir; caso contrário, fundo sólido escuro. bg_blur/bg_dark controlam o
+    desfoque (px) e o escurecimento (0–1) aplicados ao fundo para manter o
+    chaveamento legível.
+    """
     from PIL import Image, ImageDraw
+
+    if bg_path is None and _BG_IMAGE.exists():
+        bg_path = str(_BG_IMAGE)
 
     nodes = build_nodes()
     if 104 not in nodes:
@@ -338,7 +375,7 @@ def render_bracket_png() -> bytes:
     width = _MARGIN_X * 2 + 5 * _BOX_W + 4 * _COL_GAP
     height = int(_TOP + total_leaves * leaf_h + _HALF_GAP - _LEAF_VGAP + _BOTTOM)
 
-    img = Image.new("RGB", (width, height), _BG)
+    img = _make_canvas(width, height, bg_path, bg_blur, bg_dark)
     draw = ImageDraw.Draw(img)
 
     f_title = _font(36, bold=True)
