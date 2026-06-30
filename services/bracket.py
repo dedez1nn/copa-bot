@@ -243,8 +243,8 @@ _COL_GAP = 36
 _LEAF_VGAP = 18
 _HALF_GAP = 44          # espaço vertical entre a metade de cima e a de baixo
 _MARGIN_X = 36
-_TOP = 128
-_BOTTOM = 36
+_TOP = 152              # base do corpo; deixa espaço para título + cabeçalho-tabela
+_BOTTOM = 30
 _FLAG = 22
 
 # Cores (tema escuro)
@@ -390,13 +390,36 @@ def render_bracket_png(bg_path: str | None = None, bg_blur: float = 12,
     draw.text((_MARGIN_X, 26), "Chaveamento — Copa do Mundo 2026", font=f_title, fill=_GOLD)
     draw.text((_MARGIN_X, 68), "Mata-mata · atualizado via FIFA", font=f_sub, fill=_GREY)
 
-    # Cabeçalhos de coluna (compartilhados pelas duas metades)
+    # Cabeçalho como linha de tabela: 5 células (uma por fase) sobre o corpo
+    # do chaveamento, que ocupa uma única célula em "colspan 5".
     col_rounds = ["R32", "R16", "QF", "SF", "F"]
+    pitch = _BOX_W + _COL_GAP
+    gap2 = _COL_GAP // 2
+    band_bottom = _TOP - 16
+    band_top = band_bottom - 40
+    tbl_left = _MARGIN_X - gap2
+    tbl_right = _MARGIN_X + 4 * pitch + _BOX_W + gap2
+    tbl_bottom = height - 14
+
+    # moldura externa (cabeçalho + corpo) e faixa do cabeçalho
+    draw.rounded_rectangle([tbl_left, band_top, tbl_right, tbl_bottom],
+                           radius=12, outline=_LINE, width=1)
+    draw.rounded_rectangle([tbl_left, band_top, tbl_right, band_bottom],
+                           radius=12, fill=_PANEL_HI, outline=_LINE, width=1,
+                           corners=(True, True, False, False))
+    draw.line([(tbl_left, band_bottom), (tbl_right, band_bottom)], fill=_LINE, width=1)
+
     for i, rnd in enumerate(col_rounds):
-        cx = _MARGIN_X + i * (_BOX_W + _COL_GAP)
+        colx = _MARGIN_X + i * pitch
+        if i > 0:  # divisória entre as células do cabeçalho
+            cell_left = colx - gap2
+            draw.line([(cell_left, band_top + 5), (cell_left, band_bottom - 5)],
+                      fill=_LINE, width=1)
         label = ROUND_LABELS[rnd]
         w = draw.textlength(label, font=f_head)
-        draw.text((cx + (_BOX_W - w) / 2, _TOP - 30), label, font=f_head, fill=_WHITE)
+        bbox = draw.textbbox((0, 0), label, font=f_head)
+        ty = (band_top + band_bottom) / 2 - (bbox[3] - bbox[1]) / 2 - bbox[1]
+        draw.text((colx + (_BOX_W - w) / 2, ty), label, font=f_head, fill=_WHITE)
 
     # Conectores (desenhados antes das caixas): direita do filho → esquerda do pai
     for num, node in nodes.items():
