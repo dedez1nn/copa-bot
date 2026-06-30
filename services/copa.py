@@ -138,6 +138,26 @@ FLAGS: dict[str, str] = {
 
 _FIFA_STATUS = {0: "finished", 1: "notstarted", 3: "inprogress"}
 
+# Nomes de fase por IdStage. A FIFA (pt-PT) chama o mata-mata de 32 de
+# "Segundas de final"; aqui usamos os nomes brasileiros. As demais fases já
+# vêm corretas da API, mas mapeamos todas para garantir consistência.
+STAGE_NAMES: dict[int, str] = {
+    289273: "Fase de grupos",
+    289287: "16-avos de final",
+    289288: "Oitavas de final",
+    289289: "Quartas de final",
+    289290: "Semifinal",
+    289291: "Decisão do 3º lugar",
+    289292: "Final",
+}
+
+
+def _stage_name(stage_id, fallback: str) -> str:
+    try:
+        return STAGE_NAMES.get(int(stage_id), fallback)
+    except (TypeError, ValueError):
+        return fallback
+
 
 def _norm(s: str) -> str:
     return unicodedata.normalize("NFD", s.lower()).encode("ascii", "ignore").decode()
@@ -275,7 +295,8 @@ def _build_matches(fifa: list[dict]) -> list[dict]:
             "date_ts": ts, "status": status,
             "home_score": h_score, "away_score": a_score,
             "group": (m.get("GroupName") or [{}])[0].get("Description", ""),
-            "stage": (m.get("StageName") or [{}])[0].get("Description", ""),
+            "stage": _stage_name(m.get("IdStage"),
+                                 (m.get("StageName") or [{}])[0].get("Description", "")),
             "fifa_id": m.get("IdMatch"),
             "stage_id": m.get("IdStage"),
         })
