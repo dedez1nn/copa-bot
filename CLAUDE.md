@@ -52,12 +52,16 @@ em clusters; retorna o cluster mais próximo de "hoje".
 Envia apenas uma vez por partida (`lineup_sent = True`).
 
 **Resumo diário**: dispara uma vez por dia às 09:00 BRT via verificação no loop de 10s
-com guard `_daily_sent_date`.
+com guard `_daily_sent_date`. Anexa **chaveamento** (com os jogos de hoje destacados,
+`highlight_today=True`) **+ artilharia** ao resumo.
 
 **Chaveamento (imagem PNG)**: enviado pelo `CopaCog` em dois momentos —
 (1) anexado ao resumo diário das 09:00 BRT, e (2) `_check_end_of_day_bracket`: ao detectar
 que **todos** os jogos do dia (`get_jogos_do_dia`) terminaram, arma um timer e posta a imagem
-1h depois (`BRACKET_EOD_DELAY_SECS`), uma vez por dia (`_eod_sent_dates`).
+1h depois (`BRACKET_EOD_DELAY_SECS`), uma vez por dia (`_eod_sent_dates`). Em ambos os
+momentos usa `highlight_today=True` e envia também a **artilharia** (top 5, imagem 1:1).
+`render_bracket_png(highlight_today=True)` marca com borda dourada + selo "HOJE" as
+partidas cuja data (BRT) é hoje.
 
 **Revisão de VAR** (`_check_fifa_live`): gols deduplicados por `(jogador, minuto, período, tipo)`;
 correção de minuto (mesmo jogador/período/tipo sem aumento na contagem de gols do time) é

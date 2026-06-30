@@ -252,27 +252,41 @@ class CopaCog(commands.Cog):
             return
 
         embed = _embed_resumo_diario(jogos, datetime.now(BRT))
-        # Anexa o chaveamento atual ao resumo do dia, quando possível.
-        png = await self._render_bracket()
+        # Anexa ao resumo: chaveamento (com os jogos de hoje destacados) + artilharia.
+        bracket_png = await self._render_bracket(highlight_today=True)
+        art_png = await self._render_artilharia()
         for guild_id, channel_id in self._monitor_channels:
             ch = self.bot.get_channel(channel_id)
             if not ch:
                 continue
+            files = []
+            if bracket_png is not None:
+                files.append(discord.File(io.BytesIO(bracket_png), filename="chaveamento.png"))
+            if art_png is not None:
+                files.append(discord.File(io.BytesIO(art_png), filename="artilharia.png"))
             try:
-                if png is not None:
-                    await ch.send(embed=embed,
-                                  file=discord.File(io.BytesIO(png), filename="chaveamento.png"))
-                else:
-                    await ch.send(embed=embed)
+                await ch.send(embed=embed, files=files)
             except Exception:
                 logger.exception("Erro ao enviar resumo diário para guild %s", guild_id)
 
-    async def _render_bracket(self) -> bytes | None:
+    async def _render_bracket(self, highlight_today: bool = False) -> bytes | None:
         """Gera o PNG do chaveamento (ou None em caso de falha)."""
         try:
-            return await asyncio.to_thread(bracket.render_bracket_png)
+            return await asyncio.to_thread(
+                bracket.render_bracket_png, highlight_today=highlight_today)
         except Exception:
             logger.exception("Erro ao gerar imagem do chaveamento")
+            return None
+
+    async def _render_artilharia(self) -> bytes | None:
+        """Gera o PNG da artilharia (ou None se não houver gols / em caso de falha)."""
+        try:
+            scorers = await asyncio.to_thread(copa_svc.get_scorers)
+            if not scorers:
+                return None
+            return await asyncio.to_thread(artilharia.render_artilharia_png, scorers)
+        except Exception:
+            logger.exception("Erro ao gerar imagem da artilharia")
             return None
 
     async def _check_end_of_day_bracket(self) -> None:
@@ -287,26 +301,33 @@ class CopaCog(commands.Cog):
             if date in self._eod_sent_dates:
                 return
             self._eod_sent_dates.add(date)
-            png = await self._render_bracket()
-            if png is None:
+            bracket_png = await self._render_bracket(highlight_today=True)
+            art_png = await self._render_artilharia()
+            if bracket_png is None and art_png is None:
                 return
-            embed = discord.Embed(
-                title="🗺️ Chaveamento — Fim dos jogos do dia",
-                description="Situação atual do mata-mata.",
-                color=0xFFCD46,
-            )
-            embed.set_image(url="attachment://chaveamento.png")
-            embed.set_footer(text="Copa do Mundo FIFA™ 2026")
-            embed.timestamp = discord.utils.utcnow()
+            embed = None
+            if bracket_png is not None:
+                embed = discord.Embed(
+                    title="🗺️ Chaveamento — Fim dos jogos do dia",
+                    description="Situação atual do mata-mata e artilharia.",
+                    color=0xFFCD46,
+                )
+                embed.set_image(url="attachment://chaveamento.png")
+                embed.set_footer(text="Copa do Mundo FIFA™ 2026")
+                embed.timestamp = discord.utils.utcnow()
             for guild_id, channel_id in self._monitor_channels:
                 ch = self.bot.get_channel(channel_id)
                 if not ch:
                     continue
+                files = []
+                if bracket_png is not None:
+                    files.append(discord.File(io.BytesIO(bracket_png), filename="chaveamento.png"))
+                if art_png is not None:
+                    files.append(discord.File(io.BytesIO(art_png), filename="artilharia.png"))
                 try:
-                    await ch.send(embed=embed,
-                                  file=discord.File(io.BytesIO(png), filename="chaveamento.png"))
+                    await ch.send(embed=embed, files=files)
                 except Exception:
-                    logger.exception("Erro ao enviar chaveamento de fim de dia para guild %s", guild_id)
+                    logger.exception("Erro ao enviar fim de dia para guild %s", guild_id)
             return
 
         # Não armado: arma quando todos os jogos de hoje estiverem encerrados.

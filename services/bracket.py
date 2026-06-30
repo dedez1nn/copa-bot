@@ -14,8 +14,10 @@ import time
 import unicodedata
 from pathlib import Path
 
+from datetime import datetime
+
 from services.copa import (
-    EN_TO_PT, PT_TO_EN, CACHE_DIR, _load_fifa_matches, _get_fifa, _norm,
+    BRT, EN_TO_PT, PT_TO_EN, CACHE_DIR, _load_fifa_matches, _get_fifa, _norm,
 )
 
 logger = logging.getLogger(__name__)
@@ -325,18 +327,21 @@ def _make_canvas(width: int, height: int, bg_path: str | None,
 
 
 def render_bracket_png(bg_path: str | None = None, bg_blur: float = 12,
-                       bg_dark: float = 0.6) -> bytes:
+                       bg_dark: float = 0.6, highlight_today: bool = False) -> bytes:
     """Renderiza o chaveamento do mata-mata (R32→Final) e retorna PNG em bytes.
 
     bg_path: imagem de fundo. Se None, usa o fundo empacotado (_BG_IMAGE) quando
     existir; caso contrário, fundo sólido escuro. bg_blur/bg_dark controlam o
     desfoque (px) e o escurecimento (0–1) aplicados ao fundo para manter o
-    chaveamento legível.
+    chaveamento legível. highlight_today: destaca as partidas cuja data (BRT) é
+    hoje (borda dourada + selo "HOJE").
     """
     from PIL import Image, ImageDraw
 
     if bg_path is None and _BG_IMAGE.exists():
         bg_path = str(_BG_IMAGE)
+
+    today = datetime.now(BRT).date() if highlight_today else None
 
     nodes = build_nodes()
     if 104 not in nodes:
@@ -434,29 +439,46 @@ def render_bracket_png(bg_path: str | None = None, bg_blur: float = 12,
             draw.line([(cxr, ky), (midx, ky), (midx, ty), (tx, ty)], fill=_LINE, width=2)
 
     # Caixas
+    f_tag = _font(11, bold=True)
     for num, node in nodes.items():
+        is_today = bool(today) and node.get("date_ts") and \
+            datetime.fromtimestamp(node["date_ts"], tz=BRT).date() == today
         _draw_box(img, draw, node, nodes, pos[num],
-                  fonts=(f_name, f_name_b, f_score, f_ph))
+                  fonts=(f_name, f_name_b, f_score, f_ph), today=is_today, f_tag=f_tag)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
 
 
-def _draw_box(img, draw, node, nodes, xy, fonts):
+def _draw_box(img, draw, node, nodes, xy, fonts, today=False, f_tag=None):
     from PIL import Image
     f_name, f_name_b, f_score, f_ph = fonts
     x, yc = xy
     x = int(x); yc = int(yc)
     top = yc - _BOX_H // 2
     is_live = node.get("status") == 3
-    bg = _PANEL_HI if is_live else _PANEL
-    border = _LIVE if is_live else _LINE
+    if today:
+        bg, border, bw = _PANEL_HI, _GOLD, 2
+    elif is_live:
+        bg, border, bw = _PANEL_HI, _LIVE, 2
+    else:
+        bg, border, bw = _PANEL, _LINE, 1
     draw.rounded_rectangle([x, top, x + _BOX_W, top + _BOX_H], radius=8,
-                           fill=bg, outline=border, width=2 if is_live else 1)
+                           fill=bg, outline=border, width=bw)
     # linha divisória entre os dois lados
     midy = top + _BOX_H // 2
     draw.line([(x + 6, midy), (x + _BOX_W - 6, midy)], fill=_BG, width=1)
+
+    # selo "HOJE" para jogos do dia
+    if today and f_tag is not None:
+        tag = "HOJE"
+        tw = draw.textlength(tag, font=f_tag)
+        bx2 = x + _BOX_W - 6
+        bx1 = bx2 - (tw + 12)
+        by1 = top - 9
+        draw.rounded_rectangle([bx1, by1, bx2, by1 + 16], radius=6, fill=_GOLD)
+        draw.text((bx1 + 6, by1 + 2), tag, font=f_tag, fill=(20, 16, 0))
 
     for i, sd in enumerate(("A", "B")):
         team, label = slot_text(nodes, node["num"], sd)
