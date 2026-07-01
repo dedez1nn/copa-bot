@@ -177,10 +177,13 @@ def _embed_artilharia(scorers: list[dict]) -> discord.Embed:
     return embed
 
 
+_DAILY_SUMMARY_TITLE = "📅 Jogos de Hoje — Copa do Mundo 2026"
+
+
 def _embed_resumo_diario(jogos: list[dict], now_brt: datetime) -> discord.Embed:
     hoje_str = now_brt.strftime("%d/%m/%Y")
     embed = discord.Embed(
-        title="📅 Jogos de Hoje — Copa do Mundo 2026",
+        title=_DAILY_SUMMARY_TITLE,
         color=0x3B82F6,
     )
     lines = []
@@ -265,9 +268,32 @@ class CopaCog(commands.Cog):
             if art_png is not None:
                 files.append(discord.File(io.BytesIO(art_png), filename="artilharia.png"))
             try:
-                await ch.send(embed=embed, files=files)
+                msg = await ch.send(embed=embed, files=files)
             except Exception:
                 logger.exception("Erro ao enviar resumo diário para guild %s", guild_id)
+                continue
+            await self._repin_daily_summary(ch, msg)
+
+    async def _repin_daily_summary(self, ch, msg: discord.Message) -> None:
+        """Fixa o novo resumo diário e desafixa resumos de dias anteriores no canal."""
+        try:
+            pins = await ch.pins()
+        except Exception:
+            logger.exception("Erro ao listar mensagens fixadas do canal %s", ch.id)
+            pins = []
+        for old in pins:
+            if old.id == msg.id or old.author.id != self.bot.user.id:
+                continue
+            if not old.embeds or old.embeds[0].title != _DAILY_SUMMARY_TITLE:
+                continue
+            try:
+                await old.unpin(reason="Substituído pelo resumo diário do dia atual")
+            except Exception:
+                logger.exception("Erro ao desafixar resumo diário antigo (msg %s)", old.id)
+        try:
+            await msg.pin(reason="Resumo diário — jogos de hoje")
+        except Exception:
+            logger.exception("Erro ao fixar resumo diário (msg %s)", msg.id)
 
     async def _render_bracket(self, highlight_today: bool = False) -> bytes | None:
         """Gera o PNG do chaveamento (ou None em caso de falha)."""
